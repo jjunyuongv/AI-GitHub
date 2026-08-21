@@ -129,6 +129,10 @@ sonnet-5 도입가는 `SONNET_5_INTRO_LAST_DAY`(2026-08-31)까지다. **날짜�
 으로 끼워 넣지 않는다** — 끼워 넣으면 정합성 테스트가 동어반복이 되어 문구가 갈라져도
 통과한다. 리터럴로 두고 `test_claude_client.py` 가 포함 여부를 검사한다.
 
+**이 두 문구는 프롬프트 계약이지 채점기가 아니다.** 모델은 규정 문구에 낱말을 끼워
+넣어 답하므로(실측 24건 중 15건), 채점은 `tests.test_citation_quality` 의
+`REFUSAL_SCOPES`·`REFUSAL_NEGATIONS`·`REFUSAL_CONCESSIONS` 가 맡는다(§1.9).
+
 ### 1.6 정적분석
 
 | 항목 | 기본값 | 출처 | env 키 |
@@ -181,6 +185,9 @@ sonnet-5 도입가는 `SONNET_5_INTRO_LAST_DAY`(2026-08-31)까지다. **날짜�
 | `ABSENT_SET_VERSION` | `1` | `tests.search_eval_dataset` | — |
 | `ABSENT_SETS` | `3개` | `tests.search_eval_dataset` | — |
 | `COST_RATIO_LIMIT` | `3.0` | `tests.test_citation_quality` | — |
+| `REFUSAL_SCOPES` | `5개` | `tests.test_citation_quality` | — |
+| `REFUSAL_NEGATIONS` | `8개` | `tests.test_citation_quality` | — |
+| `REFUSAL_CONCESSIONS` | `1개` | `tests.test_citation_quality` | — |
 
 `ABSENT_SETS` 는 저장소에 **없는** 기능을 묻는 질의다(세트당 6개). `EVAL_SETS` 에 섞지
 않는다 — 섞으면 Recall@8 의 분모가 바뀌어 `search_evals.jsonl` 의 기존 기록과 비교가
@@ -189,6 +196,16 @@ sonnet-5 도입가는 `SONNET_5_INTRO_LAST_DAY`(2026-08-31)까지다. **날짜�
 `COST_RATIO_LIMIT` 은 tool use 판정 기준 C 의 임계값이다 — 품질이 올라도 질문당 비용이
 기준선의 이 배수를 넘으면 전면 도입하지 않는다. 근거는 `tests/test_citation_quality.py`
 docstring 에 측정 전에 고정해 두었다.
+
+거절 채점기 셋(`REFUSAL_SCOPES`·`REFUSAL_NEGATIONS`·`REFUSAL_CONCESSIONS`)은
+**"[어디를 봤는가] + [거기에 없다]" 문장 구조에서 유도했다.** 정규식을 늘려 실패 건수를
+맞춘 것이 아니다. **첫 문장만 본다** — 프롬프트가 "한 문장으로 밝히라"고 요구하므로 진짜
+거절은 답변을 열면서 나오고, 본문 어디든 보면 근거를 댄 뒤의 단서까지 거절로 잡힌다.
+`tests/test_rescore_refusals.py` 가 양쪽에서 조인다: 거절 질의 24건은 전부 잡히고,
+**정답을 짚은 답변은 하나도 거절로 잡히지 않는다**(뒤쪽이 진짜 방어선이다).
+채점기를 고치면 `pytest -m evaluation tests/test_rescore_refusals.py` 로 **무과금 재채점**을
+하고 거절 축 기준선을 다시 쓴다 — 답변 원문이 `Back/logs/citation_evals.jsonl` 에 남아 있어
+LLM 을 다시 부를 필요가 없다.
 
 ---
 

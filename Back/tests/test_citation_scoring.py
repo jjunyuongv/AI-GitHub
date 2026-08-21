@@ -45,6 +45,68 @@ def test_the_other_refusal_phrase_also_counts():
     assert _refused(f"{NOT_IN_SEARCH_PHRASE}. UserController.java 근처일 수 있습니다.")
 
 
+# ── 문구 변형 — 옛 채점기가 24건 중 15건을 놓친 자리 ─────────
+#
+# 아래 문장들은 2026-08-21 기준선에서 **실제로 나온 답변의 첫 문장**이다.
+# 로그 파일(gitignore 대상)이 없는 환경에서도 자가 지켜지도록 여기 고정한다.
+
+def test_a_word_wedged_into_the_phrase_still_counts():
+    """모델은 거의 항상 "검색된 `코드` 범위에는" 으로 쓴다. 연속 매칭은 여기서 깨졌다."""
+    assert _refused("검색된 코드 범위에는 출퇴근 기록 관련 내용이 없습니다.")
+    assert _refused("검색된 범위 안에는 피드백 서비스 관련 코드가 보이지 않습니다.")
+    assert _refused("검색된 코드에는 HTTP/2 관련 구현이 보이지 않습니다.")
+    assert _refused("검색된 코드 범위 안에서는 푸시 우선순위를 지정하는 옵션을 찾을 수 없습니다.")
+
+
+def test_the_full_injection_family_counts():
+    """전체 주입 팔은 구조적으로 다른 표현을 쓴다.
+
+    프롬프트가 "검색된 범위" 표현을 금지해서(전부 왔으므로) 모델은 저장소 전체를
+    가리키는 말로 답한다. 규정된 두 문구 어디에도 안 걸려 이 팔이 0.1667 이었다 —
+    **프롬프트가 시킨 대로 답할수록 자가 0점을 주는 구조였다.**
+    """
+    assert _refused("주어진 저장소 소스에는 Feedback Service 를 구현한 코드가 없습니다.")
+    assert _refused("저장소 전체 소스를 확인한 결과, HTTP/2 기반 푸시 전송 코드는 존재하지 않습니다.")
+    assert _refused("주어진 코드 전체를 살펴봐도 인증서 만료일을 검사하는 로직은 없습니다.")
+
+
+# ── 반대 방향 — 여기가 진짜 방어선이다 ───────────────────────
+
+def test_a_qualifier_after_a_real_answer_is_not_a_refusal():
+    """근거를 대고 나서 못 찾은 부분을 밝히는 것은 프롬프트가 시킨 대로 답한 것이다.
+
+    본문 아무 데나 보면 이런 답변이 거절로 잡히고, 그러면 "지어낸 답 + 면피 한 줄" 이
+    거절로 통과해 축이 무의미해진다. **첫 문장만 본다.**
+    """
+    answer = (
+        "ApnsPayload.java 의 30행에서 `class ApnsPayload extends Payload` 로 상속합니다."
+        " 검색된 범위 안에서는 Payload 를 상속하는 다른 클래스는 확인되지 않습니다."
+    )
+
+    assert not _refused(answer)
+
+
+def test_a_concessive_opening_is_not_a_refusal():
+    """"X 는 있지만 Y 는 없다" 는 거절 선언이 아니라 일부는 답한 문장이다.
+
+    실측에서 이것 하나가 방어선을 넘었다(ap_ko_06 — ApnsChannel.java 를 정확히
+    짚으면서 재전송 로직만 없다고 했다). 모호한 문장은 거절로 세지 않는다 —
+    적게 세는 쪽으로 틀려야 tool use 가 실제보다 정직해 보이지 않는다.
+    """
+    answer = (
+        "검색된 코드 범위에서는 실패 알림을 캐시하는 부분(`ApnsChannel.java`)은 보이지만,"
+        " 재전송을 수행하는 로직 자체는 확인되지 않습니다."
+    )
+
+    assert not _refused(answer)
+
+
+def test_a_negation_without_a_scope_is_not_a_refusal():
+    """부정 술어만으로는 거절이 아니다. 무엇을 봤는지 말해야 거절 선언이다."""
+    assert not _refused("`ApnsChannel.send()` 는 성공/실패 카운트를 누적하지 않습니다.")
+    assert not _refused("이 클래스에는 우선순위 필드가 없습니다.")
+
+
 def test_a_plain_wrong_answer_is_neither():
     """지어낸 답변 — 거절도 안 했고 정답도 못 짚었다. 두 자 모두 실패로 센다."""
     answer = "VacationController.java 의 12행에서 휴가 신청을 처리합니다."

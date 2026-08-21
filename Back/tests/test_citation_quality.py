@@ -49,6 +49,7 @@ Recall@8·MRR 은 검색 순위 지표인데 전체 주입에는 검색이 없�
 """
 
 import json
+import re
 import time
 from pathlib import Path
 
@@ -105,14 +106,82 @@ def _cited(answer: str, case: dict) -> bool:
     return any(a["path_suffix"] in answer for a in case.get("answers", []))
 
 
-def _refused(answer: str) -> bool:
-    """규정된 거절 문구를 썼는가. 둘 중 하나라도 있으면 거절이다.
+# ── 거절 채점기 ──────────────────────────────────────────────
+#
+# **문장 구조에서 유도했다. 정규식을 늘려 15건을 맞춘 것이 아니다.**
+# 거절 문장은 예외 없이 "[어디를 봤는가] + [거기에 없다]" 두 조각으로 이루어진다.
+# 그래서 두 조각을 따로 정의하고, 한 문장 안에서 이 순서로 나타나는지만 본다.
+#
+# 옛 채점기는 규정 문구 두 개를 **연속 문자열**로 찾았는데, 모델은 거의 항상
+# "검색된 `코드` 범위에는 … 없습니다" 처럼 낱말을 끼워 넣어서 24건 중 15건이
+# 새어 나갔다(2026-08-21 기준선). 날조는 0건이었다 — 자의 문제였다.
+#
+# CHAT_SYSTEM_PROMPT 는 건드리지 않는다. 프롬프트를 고치면 재는 대상이 바뀌어
+# 인용 정확도까지 흔들리고 89회를 다시 돌려야 한다. 여기는 채점기만 고친다.
 
-    두 팔 모두 두 문구를 다 인정한다. 전체 주입에서 "검색된 범위에는 없습니다"는
-    프롬프트 위반이지만(전부 왔으므로), 그건 **형식 위반이지 날조가 아니다** —
-    이 축이 재려는 것은 지어냈는가다.
+# (가) 어디를 봤는가. 답변이 근거의 범위를 가리키는 표현.
+REFUSAL_SCOPES = (
+    r"검색된",  # 검색된 범위 / 검색된 코드 / 검색된 코드 범위 / 검색된 부분
+    r"검색\s*결과",
+    r"(?:주어진|제공된)\s*(?:정보|코드|저장소|소스)",
+    r"(?:저장소\s*)?전체\s*소스",  # 전체 주입 팔이 쓰는 계열
+    r"코드\s*전체",
+)
+
+# (나) 거기에 없다. 부정 술어.
+REFUSAL_NEGATIONS = (
+    r"없(?:습니다|다|음|어요)",
+    r"보이지\s*않",
+    r"존재하지\s*않",
+    r"찾을\s*수\s*없",
+    r"확인되지\s*않",
+    r"알\s*수\s*없",
+    r"나타나지\s*않",
+    r"포함되어\s*있지\s*않",
+)
+
+# (다) 양보 — "X 는 있지만 Y 는 없다". 이건 거절 선언이 아니라 **일부는 답한** 문장이다.
+# 근거를 대고 나서 못 찾은 부분을 밝히는 것은 프롬프트가 시킨 대로 답한 것이다.
+# 이걸 거절로 세면 "지어낸 답 + 면피 한 줄" 이 그대로 통과한다.
+#
+# **모호한 문장은 거절로 세지 않는다.** 거절을 적게 세는 쪽으로 틀리면 tool use 가
+# 실제보다 정직해 보이는 일은 없다 — 안전한 방향이다.
+REFUSAL_CONCESSIONS = (
+    r"(?:보이|있|존재하|확인되|나오|나타나)(?:지만|으나|지마는)",
+)
+
+_REFUSAL_RE = re.compile(
+    f"(?:{'|'.join(REFUSAL_SCOPES)}).*?(?:{'|'.join(REFUSAL_NEGATIONS)})"
+)
+_CONCESSION_RE = re.compile("|".join(REFUSAL_CONCESSIONS))
+
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
+
+
+def _first_sentence(answer: str) -> str:
+    return _SENTENCE_SPLIT.split(answer.strip(), maxsplit=1)[0] if answer.strip() else ""
+
+
+def _refused(answer: str) -> bool:
+    """답변이 **거절로 시작하는가.**
+
+    **첫 문장만 본다.** 이것이 이 채점기에서 가장 중요한 조임쇠다.
+    `CHAT_SYSTEM_PROMPT` 가 "근거가 없으면 … 한 문장으로 밝히고" 를 요구하므로,
+    진짜 거절은 답변을 열면서 나온다. 실측에서도 거절 질의 24건 전부가 첫 문장에서
+    거절했다.
+
+    본문 어디든 보면 **근거를 대고 나서 덧붙인 단서**까지 거절로 잡힌다 —
+    "ApnsPayload 가 Payload 를 상속합니다. 검색된 범위 안에서 상속하는 다른 클래스는
+    확인되지 않습니다" 같은 답변은 거절이 아니라 정확한 답이다. 그걸 거절로 세면
+    "지어낸 답 + 면피 한 줄" 이 거절로 통과해 축이 무의미해진다.
+
+    두 팔 모두 세 계열을 다 인정한다. 전체 주입에서 "검색된 범위" 표현은 프롬프트
+    위반이지만 그건 **형식 위반이지 날조가 아니다** — 이 축이 재려는 것은 지어냈는가다.
     """
-    return any(p in answer for p in claude_client.REFUSAL_PHRASES)
+    opening = _first_sentence(answer)
+    if _CONCESSION_RE.search(opening):
+        return False
+    return bool(_REFUSAL_RE.search(opening))
 
 
 def _score(answer: str, case: dict) -> bool:
