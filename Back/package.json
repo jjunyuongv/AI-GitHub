@@ -1,0 +1,10 @@
+{
+  "name": "repodive-back-tools",
+  "version": "1.0.0",
+  "private": true,
+  "description": "백엔드가 쓰는 Node 기반 도구. JS/TS 정적분석기(oxlint)와 CSS 정적분석기(stylelint). 설정도 의존성도 읽지 않는 린터만 쓴다 — ESLint 는 저장소의 설정 파일(=JS 코드)을 실행하고 npm install 이 필요해서, 임의의 저장소를 받는 이 서비스에서는 남의 코드를 우리 서버에서 실행하게 된다. stylelint 는 --config 를 주면 저장소 설정을 읽지도 실행하지도 않는 것을 실측으로 확인하고 넣었다.",
+  "dependencies": {
+    "oxlint": "1.79.0",
+    "stylelint": "17.14.1"
+  }
+}

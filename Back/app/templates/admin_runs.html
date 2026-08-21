@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>실행 기록 · RepoDive 관리자</title>
+<link rel="stylesheet" href="/admin/admin.css">
+</head>
+<body>
+<nav>
+  <div class="brand">RepoDive<span>관리자</span></div>
+  <a href="/admin">홈</a>
+  <a href="/admin/lab">실험실</a>
+  <a href="/admin/runs" class="active">실행 기록</a>
+  <a href="/admin/usage">사용량</a>
+  <a href="/admin/search">검색 품질</a>
+  <a href="/admin/snapshots">스냅샷</a>
+</nav>
+<main>
+<h1>실행 기록 <span class="muted">— 행을 클릭하면 응답 원문</span></h1>
+
+<fieldset>
+  <legend>필터</legend>
+  <div class="row" style="margin-bottom:0">
+    <div><label>출처</label>
+      <select id="fSource">
+        <option value="">전체</option>
+        <option value="lab">실험실</option>
+        <option value="analyze">프론트</option>
+      </select></div>
+    <div><label>모델</label><select id="fModel"><option value="">전체</option></select></div>
+    <div><label>repo 검색</label><input type="text" id="fRepo" placeholder="owner/name"></div>
+    <div id="summary" class="muted" style="font-size:14px"></div>
+  </div>
+</fieldset>
+
+<fieldset>
+  <legend>기록</legend>
+  <table>
+    <thead><tr>
+      <th data-sort="ts">시각</th><th>출처</th><th>repo</th><th>모델</th><th>effort</th>
+      <th class="num" data-sort="fetch_ms">fetch</th><th class="num" data-sort="llm_ms">LLM</th>
+      <th class="num" data-sort="input_tokens">in</th><th class="num" data-sort="output_tokens">out</th>
+      <th class="num">캐시쓰기</th><th class="num">캐시읽기</th><th class="num" data-sort="cost_usd">비용</th>
+    </tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+</fieldset>
+
+</main>
+
+<dialog id="detail">
+  <h3 id="dTitle" style="margin-top:0"></h3>
+  <div id="dMeta" class="muted" style="font-size:14px"></div>
+  <h4>응답</h4><pre id="dSummary"></pre>
+  <h4>시스템 프롬프트</h4><pre id="dPrompt"></pre>
+  <button onclick="detail.close()">닫기</button>
+</dialog>
+
+<script>
+let RUNS = [];      // 서버에서 받은 전체 기록 (최신순)
+let VIEW = [];      // 필터·정렬이 적용된 현재 화면 기록
+let SORT = { key: "ts", desc: true };
+
+const $ = (id) => document.getElementById(id);
+const fmt = (n) => n == null ? "—" : n.toLocaleString();
+const cost = (c) => c == null ? "—" : "$" + c.toFixed(4);
+// source는 나중에 추가된 필드다. 없는 옛 기록은 전부 실험실에서 나온 것.
+const source = (r) => r.source || "lab";
+const sourceLabel = (r) => source(r) === "analyze" ? "프론트" : "실험실";
+
+async function loadRuns() {
+  RUNS = await (await fetch("/admin/api/runs?limit=500")).json();
+  const models = [...new Set(RUNS.map((r) => r.model))].sort();
+  $("fModel").innerHTML = '<option value="">전체</option>'
+    + models.map((m) => `<option value="${m}">${m}</option>`).join("");
+  render();
+}
+
+function render() {
+  const src = $("fSource").value;
+  const model = $("fModel").value;
+  const repo = $("fRepo").value.trim().toLowerCase();
+
+  VIEW = RUNS.filter((r) =>
+    (!src || source(r) === src)
+    && (!model || r.model === model)
+    && (!repo || r.repo.toLowerCase().includes(repo)));
+
+  VIEW.sort((a, b) => {
+    const x = a[SORT.key], y = b[SORT.key];
+    if (x == null) return 1;
+    if (y == null) return -1;
+    return (x > y ? 1 : x < y ? -1 : 0) * (SORT.desc ? -1 : 1);
+  });
+
+  const total = VIEW.reduce((s, r) => s + (r.cost_usd || 0), 0);
+  $("summary").textContent = `${VIEW.length}건 · 합계 ${cost(total)}`;
+
+  $("rows").innerHTML = VIEW.map((r, i) => `
+    <tr data-i="${i}">
+      <td class="muted">${new Date(r.ts).toLocaleString()}</td>
+      <td><span class="tag">${sourceLabel(r)}</span></td>
+      <td>${r.repo}</td><td>${r.model}</td>
+      <td>${r.effort ?? '<span class="muted">—</span>'}</td>
+      <td class="num muted">${r.fetch_ms}ms</td>
+      <td class="num">${r.llm_ms}ms</td>
+      <td class="num">${fmt(r.input_tokens)}</td>
+      <td class="num">${fmt(r.output_tokens)}</td>
+      <td class="num muted">${fmt(r.cache_write_tokens)}</td>
+      <td class="num muted">${fmt(r.cache_read_tokens)}</td>
+      <td class="num">${cost(r.cost_usd)}</td>
+    </tr>`).join("");
+}
+
+$("rows").addEventListener("click", (e) => {
+  const tr = e.target.closest("tr");
+  if (!tr) return;
+  const r = VIEW[tr.dataset.i];
+  $("dTitle").textContent =
+    `${r.repo} · ${r.model}${r.effort ? " · " + r.effort : ""} (${sourceLabel(r)})`;
+  $("dMeta").textContent =
+    `fetch ${r.fetch_ms}ms / LLM ${r.llm_ms}ms · in ${fmt(r.input_tokens)} out ${fmt(r.output_tokens)} `
+    + `캐시쓰기 ${fmt(r.cache_write_tokens)} 읽기 ${fmt(r.cache_read_tokens)} · ${cost(r.cost_usd)} · 컨텍스트 ${fmt(r.context_chars)}자`;
+  $("dSummary").textContent = r.summary;
+  $("dPrompt").textContent = r.system_prompt;
+  $("detail").showModal();
+});
+
+document.querySelectorAll("th[data-sort]").forEach((th) => {
+  th.addEventListener("click", () => {
+    const key = th.dataset.sort;
+    SORT = { key, desc: SORT.key === key ? !SORT.desc : true };
+    render();
+  });
+});
+
+["fSource", "fModel", "fRepo"].forEach((id) =>
+  $(id).addEventListener("input", render));
+
+loadRuns();
+</script>
+</body>
+</html>

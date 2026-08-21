@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>스냅샷 · RepoDive 관리자</title>
+<link rel="stylesheet" href="/admin/admin.css">
+<style>
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .stat { border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; background: var(--panel); }
+  .stat .label { color: var(--muted); font-size: 13px; }
+  .stat .value { font-size: 22px; font-variant-numeric: tabular-nums; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .rule { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+  .stale { color: #f85149; font-weight: 600; }
+  .fresh { color: #3fb950; }
+  .legacy { color: #d29922; }
+  .status-failed { color: #f85149; }
+  .status-running { color: #d29922; }
+  .status-pending { color: var(--muted); }
+  .hint { color: var(--muted); font-size: 13px; line-height: 1.6; }
+  code { background: var(--border); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+</style>
+</head>
+<body>
+<nav>
+  <div class="brand">RepoDive<span>관리자</span></div>
+  <a href="/admin">홈</a>
+  <a href="/admin/lab">실험실</a>
+  <a href="/admin/runs">실행 기록</a>
+  <a href="/admin/usage">사용량</a>
+  <a href="/admin/search">검색 품질</a>
+  <a href="/admin/snapshots" class="active">스냅샷</a>
+</nav>
+<main>
+<h1>스냅샷 <span class="muted">— 색인 상태와 청킹 규칙</span></h1>
+
+<fieldset>
+  <legend>지금 규칙</legend>
+  <div id="current" class="rule">불러오는 중…</div>
+</fieldset>
+
+<fieldset>
+  <legend>요약</legend>
+  <div id="cards" class="stats"></div>
+</fieldset>
+
+<fieldset>
+  <legend>색인 목록 <span class="muted">— 규칙이 다르면 그 인덱스는 옛 청크다</span></legend>
+  <table>
+    <thead>
+      <tr>
+        <th>스냅샷</th><th>저장소</th><th>버전</th><th>청크 테이블</th>
+        <th>상태</th><th class="num">청크</th><th>청킹 규칙</th><th>갱신</th><th></th>
+      </tr>
+    </thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <p id="actionError" class="stale"></p>
+  <p class="hint">
+    <span class="stale">빨강</span>은 지금 규칙과 다른 규칙으로 만들어진 색인이고,
+    <span class="legacy">주황(legacy)</span>은 규칙을 기록하기 전에 만들어져 무슨 규칙인지 알 수 없는 것이다.
+    둘 다 재색인 대상이다. <span class="muted">회색(미사용)</span>은 지금 쓰지 않는 차원의
+    테이블이라 낡았든 아니든 고칠 이유가 없다 — 재색인 대상에서 뺀다.
+  </p>
+  <p class="hint">
+    청크 자리의 <span class="muted">전체 주입</span>은 임계값 이하라 검색 색인을 만들지 않고
+    소스를 통째로 프롬프트에 넣는 스냅샷이다. 청크가 0개인 것이 정상이며,
+    <strong>소스가 없는 저장소나 깨진 색인과 다르다.</strong>
+  </p>
+  <p class="hint">
+    저장소 이름을 눌러 <strong>빌드 이력</strong>을 펼치면 이전 빌드로 되돌릴 수 있다.
+    새 색인이 완료되는 순간까지 검색은 옛 빌드를 계속 쓰므로, 재색인이 도는 동안에도
+    챗봇은 코드를 잃지 않는다.
+  </p>
+</fieldset>
+
+<fieldset>
+  <legend>정리 <span class="muted">— 기본은 미리보기다</span></legend>
+  <div id="cleanupResult" class="hint">아직 확인하지 않았다.</div>
+  <p>
+    <button type="button" id="cleanupDry">무엇이 지워질지 보기</button>
+    <button type="button" id="cleanupApply">실제로 지우기</button>
+  </p>
+  <p class="hint">
+    지우는 것은 되돌릴 수 없다. <strong>대화가 참조하는 스냅샷은 절대 지우지 않으며</strong>,
+    메시지 없는 세션도 만들어진 지 24시간이 지난 것만 지운다 — 분석 직후 첫 질문을
+    하기 전의 세션을 지우면 질문하는 순간 세션이 사라진다.
+  </p>
+</fieldset>
+
+<fieldset>
+  <legend>규칙 값은 어디서 오는가</legend>
+  <p class="hint">
+    <code>app/core/chunk_rule.py</code> 가 청킹 상수와 함수 코드에서 자동으로 뽑는다.
+    상수를 손으로 올리는 방식이 아니라서 규칙을 고치면 값이 저절로 바뀌고,
+    주석만 고친 경우에는 바뀌지 않는다(AST 로 비교한다).
+  </p>
+  <p class="hint">
+    <strong>낡은 색인을 자동으로 다시 만들지 않는다.</strong> 규칙이 바뀌면 모든 저장소의
+    색인이 한꺼번에 낡는데, 그때 자동으로 시작하면 배포 직후 전 저장소가 임베딩에 들어간다.
+    재색인은 여기서 하나씩 트리거하고, 워커 하나가 순서대로 처리한다.
+  </p>
+</fieldset>
+</main>
+
+<script>
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+const when = (iso) => {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return isNaN(d) ? "—" : d.toLocaleString("ko-KR", { dateStyle: "short", timeStyle: "short" });
+};
+
+async function load() {
+  let data;
+  try {
+    const resp = await fetch("/admin/api/snapshots");
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({}));
+      throw new Error(body.detail || `조회 실패 (${resp.status})`);
+    }
+    data = await resp.json();
+  } catch (e) {
+    document.getElementById("current").textContent = e.message;
+    return;
+  }
+
+  document.getElementById("current").innerHTML =
+    `청킹 규칙 <strong>${esc(data.current_rule)}</strong> · ` +
+    `쓰는 청크 테이블 <code>${esc(data.chunk_table)}</code>`;
+
+  const total = data.snapshots.length;
+  const stale = data.stale_count;
+  document.getElementById("cards").innerHTML = [
+    ["색인 수", total],
+    ["최신 규칙", total - stale],
+    ["재색인 필요", stale],
+  ].map(([label, value]) => `
+    <div class="stat">
+      <div class="label">${esc(label)}</div>
+      <div class="value ${label === "재색인 필요" && value > 0 ? "stale" : ""}">${value}</div>
+    </div>`).join("");
+
+  document.getElementById("rows").innerHTML = data.snapshots.map((row) => {
+    const isLegacy = row.chunk_rule === "legacy";
+    let ruleClass = "fresh", note = "";
+    if (!row.in_use) { ruleClass = "muted"; note = " (미사용)"; }
+    else if (row.stale) { ruleClass = isLegacy ? "legacy" : "stale"; note = " (재색인 필요)"; }
+    const action = row.in_use
+      ? `<button type="button" data-rebuild="${esc(row.snapshot_id)}"
+                 data-table="${esc(row.table_name)}">재색인</button>`
+      : "";
+    return `
+      <tr>
+        <td>#${esc(row.snapshot_id)}</td>
+        <td><a href="#" data-builds="${esc(row.snapshot_id)}"
+               data-table="${esc(row.table_name)}"
+            >${esc(row.display_owner)}/${esc(row.display_name)}</a></td>
+        <td class="rule">${esc(row.key_source)}:${esc(row.version)}</td>
+        <td class="rule">${esc(row.table_name)}</td>
+        <td class="status-${esc(row.status)}">${esc(row.status)}</td>
+        <td class="num">${row.full_injection
+            ? `<span class="muted" title="검색 색인이 없다. 소스 전체를 프롬프트에 넣는다">전체 주입 ${
+                 Number(row.source_tokens || 0).toLocaleString()}토큰</span>`
+            : esc(row.chunks_actual)}</td>
+        <td class="rule ${ruleClass}">${esc(row.chunk_rule)}${note}</td>
+        <td>${when(row.updated_at)}</td>
+        <td>${action}</td>
+      </tr>`;
+  }).join("") || `<tr><td colspan="9">색인된 스냅샷이 없습니다.</td></tr>`;
+}
+
+async function post(path, body) {
+  const resp = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(data.detail || `요청 실패 (${resp.status})`);
+  return data;
+}
+
+async function showBuilds(snapshotId, table, afterRow) {
+  document.querySelectorAll("tr.builds-row").forEach((el) => el.remove());
+  const data = await post_get(`/admin/api/builds?snapshot_id=${snapshotId}&table=${table}`);
+  const rows = data.builds.map((b) => `
+    <tr>
+      <td>#${esc(b.build_id)}</td>
+      <td class="status-${esc(b.status)}">${esc(b.status)}</td>
+      <td class="num">${esc(b.chunks_done)} / ${esc(b.chunks_total)}</td>
+      <td class="rule ${b.chunk_rule === data.current_rule ? "fresh" : "stale"}">${esc(b.chunk_rule)}</td>
+      <td>${when(b.completed_at || b.updated_at)}</td>
+      <td>${b.is_active ? "<strong>사용 중</strong>" :
+        (b.status === "completed"
+          ? `<button type="button" data-rollback="${esc(b.build_id)}"
+                     data-snapshot="${esc(snapshotId)}" data-table="${esc(table)}"
+             >이 빌드로 되돌리기</button>` : "")}</td>
+      <td>${esc(b.error || "")}</td>
+    </tr>`).join("") || `<tr><td colspan="7">빌드 이력이 없습니다.</td></tr>`;
+
+  const tr = document.createElement("tr");
+  tr.className = "builds-row";
+  tr.innerHTML = `<td colspan="9">
+      <table><thead><tr>
+        <th>빌드</th><th>상태</th><th class="num">청크</th><th>규칙</th>
+        <th>완료</th><th></th><th>오류</th>
+      </tr></thead><tbody>${rows}</tbody></table>
+    </td>`;
+  afterRow.insertAdjacentElement("afterend", tr);
+}
+
+async function post_get(path) {
+  const resp = await fetch(path);
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(data.detail || `조회 실패 (${resp.status})`);
+  return data;
+}
+
+document.addEventListener("click", async (e) => {
+  const el = e.target.closest("[data-rebuild], [data-builds], [data-rollback]");
+  if (!el) return;
+  e.preventDefault();
+  try {
+    if (el.dataset.rebuild) {
+      el.disabled = true;
+      const r = await post("/admin/api/rebuild-index", {
+        snapshot_id: Number(el.dataset.rebuild), table: el.dataset.table,
+      });
+      el.textContent = `빌드 #${r.build_id} 시작됨`;
+    } else if (el.dataset.builds) {
+      await showBuilds(el.dataset.builds, el.dataset.table, el.closest("tr"));
+    } else if (el.dataset.rollback) {
+      await post("/admin/api/rollback-index", {
+        snapshot_id: Number(el.dataset.snapshot),
+        build_id: Number(el.dataset.rollback),
+        table: el.dataset.table,
+      });
+      await load();
+    }
+  } catch (err) {
+    // 페이지 안에 표시한다 — alert 은 화면을 막고 자동 확인도 어렵게 만든다.
+    document.getElementById("actionError").textContent = err.message;
+    if (el.dataset.rebuild) el.disabled = false;
+  }
+});
+
+async function cleanup(apply) {
+  const box = document.getElementById("cleanupResult");
+  box.textContent = "확인 중…";
+  try {
+    const r = await post(`/admin/api/cleanup?apply=${apply}`);
+    const lines = Object.entries(r.found)
+      .filter(([k]) => k !== "chunk_table_in_use")
+      .map(([k, v]) => `${k}: ${typeof v === "object" ? JSON.stringify(v) : v}`);
+    box.innerHTML = (apply ? "<strong>지웠다.</strong> " : "<strong>미리보기.</strong> ")
+      + esc(lines.join(" · "))
+      + (apply ? `<br>삭제: ${esc(JSON.stringify(r.deleted))}` : "");
+  } catch (err) {
+    box.textContent = err.message;
+  }
+}
+
+document.getElementById("cleanupDry").addEventListener("click", () => cleanup(false));
+document.getElementById("cleanupApply").addEventListener("click", () => {
+  if (confirm("되돌릴 수 없습니다. 지울까요?")) cleanup(true);
+});
+
+load();
+</script>
+</body>
+</html>

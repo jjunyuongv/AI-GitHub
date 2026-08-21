@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>RepoDive 관리자</title>
+<link rel="stylesheet" href="/admin/admin.css">
+</head>
+<body>
+<nav>
+  <div class="brand">RepoDive<span>관리자</span></div>
+  <a href="/admin" class="active">홈</a>
+  <a href="/admin/lab">실험실</a>
+  <a href="/admin/runs">실행 기록</a>
+  <a href="/admin/usage">사용량</a>
+  <a href="/admin/search">검색 품질</a>
+  <a href="/admin/snapshots">스냅샷</a>
+</nav>
+<main>
+  <h1>관리자</h1>
+  <div class="cards">
+    <a class="card" href="/admin/lab">
+      <h2>🧪 실험실</h2>
+      <p>모델·effort·시스템 프롬프트를 바꿔가며 요약을 실행한다.</p>
+    </a>
+    <a class="card" href="/admin/runs">
+      <h2>📊 실행 기록</h2>
+      <p>실험실과 프론트(/analyze)의 모든 호출을 시간·토큰·비용과 함께 조회한다.</p>
+    </a>
+    <a class="card" href="/admin/usage">
+      <h2>💳 사용량</h2>
+      <p>실행 기록에서 집계한 호출 횟수·토큰·비용(추정)과 GitHub API 잔여 요청 수.</p>
+    </a>
+    <a class="card" href="/admin/search">
+      <h2>🔍 검색 품질</h2>
+      <p>임베딩 모델별 코드 검색 정확도를 평가셋으로 재고 나란히 비교한다. 한국어 질의가 핵심 지표다.</p>
+    </a>
+    <a class="card" href="/admin/snapshots">
+      <h2>🗂️ 스냅샷</h2>
+      <p>저장소별 색인 상태와 그 청크를 만든 청킹 규칙. 규칙이 바뀌어 낡은 색인을 여기서 찾는다.</p>
+    </a>
+  </div>
+</main>
+</body>
+</html>

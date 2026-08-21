@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>검색 품질 · RepoDive 관리자</title>
+<link rel="stylesheet" href="/admin/admin.css">
+<style>
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .stat { border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; background: var(--panel); }
+  .stat .label { color: var(--muted); font-size: 13px; }
+  .stat .value { font-size: 22px; font-variant-numeric: tabular-nums; }
+  .model-name { font-family: ui-monospace, Consolas, monospace; font-size: 12px; word-break: break-all; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .better { color: #3fb950; font-weight: 600; }
+  .worse { color: #f85149; font-weight: 600; }
+  .same { color: var(--muted); }
+  .miss { color: #d29922; }
+  .kind-korean { border-left: 3px solid var(--accent); }
+  .kind-identifier { border-left: 3px solid var(--border); }
+  .hint { color: var(--muted); font-size: 13px; line-height: 1.6; }
+  .current { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+  code { background: var(--border); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+</style>
+</head>
+<body>
+<nav>
+  <div class="brand">RepoDive<span>관리자</span></div>
+  <a href="/admin">홈</a>
+  <a href="/admin/lab">실험실</a>
+  <a href="/admin/runs">실행 기록</a>
+  <a href="/admin/usage">사용량</a>
+  <a href="/admin/search" class="active">검색 품질</a>
+  <a href="/admin/snapshots">스냅샷</a>
+</nav>
+<main>
+<h1>검색 품질 <span class="muted">— 임베딩 모델 비교</span></h1>
+
+<fieldset>
+  <legend>지금 쓰는 설정</legend>
+  <div id="current" class="current">불러오는 중…</div>
+</fieldset>
+
+<fieldset>
+  <legend>모델별 최신 측정 <span class="muted">— 한국어 질의가 핵심 지표다</span></legend>
+  <div id="cards" class="stats"></div>
+  <table id="summary">
+    <thead>
+      <tr>
+        <th>모델</th><th>차원</th><th>테이블</th><th>평가셋</th>
+        <th class="num">한국어 MRR</th><th class="num">한국어 R@8</th><th class="num">한국어 평균순위</th>
+        <th class="num">식별자 MRR</th><th class="num">식별자 R@8</th>
+        <th class="num">청크</th><th class="num">임베딩</th><th class="num">메모리</th><th class="num">잘림</th>
+        <th>측정 시각</th>
+      </tr>
+    </thead>
+    <tbody id="summaryBody"></tbody>
+  </table>
+</fieldset>
+
+<fieldset>
+  <legend>질의별 정답 순위 <span class="muted">— 낮을수록 좋다. 나빠진 것도 그대로 보인다</span></legend>
+  <table id="perQuery">
+    <thead><tr id="perQueryHead"></tr></thead>
+    <tbody id="perQueryBody"></tbody>
+  </table>
+  <p class="hint">
+    파란 세로선은 한국어 개념어 질의, 회색은 영문 식별자 질의다.
+    <span class="better">초록</span>은 기준 모델보다 순위가 오른 것,
+    <span class="worse">빨강</span>은 내려간 것,
+    <span class="miss">주황</span>은 정답을 아예 못 찾은 것이다.
+    맨 왼쪽 모델이 비교 기준이 된다.
+  </p>
+  <p class="hint">
+    <strong>평가셋 버전이 다른 열끼리는 비교하지 말 것.</strong> v2 는 정답 판정을 조여서
+    v1 보다 수치가 낮게 나온다 — 품질이 나빠진 게 아니라 측정이 정확해진 것이다.
+    v1 은 정답 파일의 청크 대부분을 정답으로 인정한 질의가 있어(일부는 100%)
+    청크 검색이 아니라 사실상 파일 검색을 재고 있었다.
+  </p>
+</fieldset>
+
+<fieldset>
+  <legend>측정하는 법</legend>
+  <p class="hint">
+    이 화면은 기록을 <b>읽기만</b> 한다. 측정은 아래 명령이 수행하며 결과는
+    <code>Back/logs/search_evals.jsonl</code> 에 쌓인다. LLM 은 부르지 않는다(임베딩은 로컬).
+  </p>
+  <pre>cd Back
+pytest -m evaluation tests/test_search_quality.py -q -s          # 지금 설정으로 측정
+
+$env:EMBEDDING_MODEL="intfloat/multilingual-e5-large"            # 다른 모델로 A/B
+$env:EMBEDDING_DIM="1024"
+$env:EMBEDDING_QUERY_PREFIX="query: "
+$env:EMBEDDING_PASSAGE_PREFIX="passage: "
+$env:CHUNK_TABLE="code_chunks_1024"
+pytest -m evaluation tests/test_search_quality.py -q -s</pre>
+</fieldset>
+</main>
+
+<script>
+const fmt = (v, d = 4) => (v === null || v === undefined) ? "—" : Number(v).toFixed(d);
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+};
+
+function shortModel(name) {
+  return name.includes("/") ? name.split("/")[1] : name;
+}
+
+// 순위 비교: 기준(base) 대비 좋아졌는지. 순위는 낮을수록 좋다.
+function rankCell(rank, base) {
+  const td = el("td", "num");
+  if (rank === null || rank === undefined) {
+    td.textContent = "없음";
+    td.classList.add("miss");
+    return td;
+  }
+  td.textContent = rank;
+  if (base === null || base === undefined || base === rank) {
+    td.classList.add("same");
+  } else {
+    td.classList.add(rank < base ? "better" : "worse");
+    td.title = `기준 ${base}위 → ${rank}위`;
+  }
+  return td;
+}
+
+async function load() {
+  const res = await fetch("/admin/api/search-evals");
+  const data = await res.json();
+
+  const c = data.current;
+  document.getElementById("current").innerHTML =
+    `모델 <b>${c.model}</b> (${c.dim}차원) · 테이블 <b>${c.table}</b>` +
+    ` · 질의 접두어 <code>${c.query_prefix || "(없음)"}</code>` +
+    ` · 문서 접두어 <code>${c.passage_prefix || "(없음)"}</code>`;
+
+  // 오래된 것이 왼쪽(=비교 기준)에 오도록 뒤집는다
+  const runs = [...data.latest].reverse();
+  if (!runs.length) {
+    document.getElementById("summaryBody").innerHTML =
+      '<tr><td colspan="13">측정 기록이 없습니다. 아래 명령으로 먼저 측정하세요.</td></tr>';
+    return;
+  }
+
+  // 요약 카드 — 한국어 Recall@8 이 이 작업의 목표 지표다
+  const cards = document.getElementById("cards");
+  cards.innerHTML = "";
+  for (const r of runs) {
+    const ko = r.by_kind?.korean;
+    const card = el("div", "stat");
+    card.appendChild(el("div", "label model-name", shortModel(r.model) + ` (${r.dim}d)`));
+    card.appendChild(el("div", "value", ko ? `${(ko.recall_at_8 * 100).toFixed(0)}%` : "—"));
+    card.appendChild(el("div", "label", `한국어 Recall@8 · MRR ${ko ? fmt(ko.mrr) : "—"}`));
+    cards.appendChild(card);
+  }
+
+  // 요약 표
+  const body = document.getElementById("summaryBody");
+  body.innerHTML = "";
+  for (const r of runs) {
+    const ko = r.by_kind?.korean || {};
+    const id = r.by_kind?.identifier || {};
+    const tr = el("tr");
+    const cells = [
+      [shortModel(r.model), "model-name"],
+      [r.dim, "num"], [r.table, ""],
+      ["v" + (r.set_version ?? 1), "num"],
+      [fmt(ko.mrr), "num"], [ko.recall_at_8 !== undefined ? (ko.recall_at_8 * 100).toFixed(0) + "%" : "—", "num"],
+      [ko.mean_rank ?? "—", "num"],
+      [fmt(id.mrr), "num"], [id.recall_at_8 !== undefined ? (id.recall_at_8 * 100).toFixed(0) + "%" : "—", "num"],
+      [r.summary?.total_chunks ?? "—", "num"],
+      [r.index_ms?.embed ? (r.index_ms.embed / 1000).toFixed(1) + "s" : "—", "num"],
+      [r.peak_memory_mb ? r.peak_memory_mb + "MB" : "—", "num"],
+      [r.truncated_chunks ?? "—", "num"],
+      [new Date(r.ts).toLocaleString("ko-KR"), ""],
+    ];
+    for (const [text, cls] of cells) tr.appendChild(el("td", cls, String(text)));
+    body.appendChild(tr);
+  }
+
+  // 질의별 순위 — 행이 질의, 열이 모델
+  const head = document.getElementById("perQueryHead");
+  head.innerHTML = "";
+  head.appendChild(el("th", "", "질의"));
+  // 열 머리에 평가셋 버전을 함께 적는다 — v1 과 v2 는 정답 조건이 달라 순위를 비교할 수 없다.
+  for (const r of runs) {
+    head.appendChild(el(
+      "th", "num model-name", shortModel(r.model) + " v" + (r.set_version ?? 1)
+    ));
+  }
+
+  const rows = document.getElementById("perQueryBody");
+  rows.innerHTML = "";
+  for (const q of runs[0].queries) {
+    const tr = el("tr", "kind-" + q.kind);
+    const label = el("td", "", q.query);
+    label.title = `기대 정답: ${q.expected}`;
+    tr.appendChild(label);
+
+    let base = null;
+    runs.forEach((r, i) => {
+      const found = r.queries.find((x) => x.id === q.id);
+      const rank = found ? found.rank : null;
+      if (i === 0) base = rank;
+      tr.appendChild(rankCell(rank, i === 0 ? rank : base));
+    });
+    rows.appendChild(tr);
+  }
+}
+
+load().catch((e) => {
+  document.getElementById("current").textContent = "불러오지 못했습니다: " + e;
+});
+</script>
+</body>
+</html>

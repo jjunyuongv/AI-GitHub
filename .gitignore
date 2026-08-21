@@ -1,0 +1,22 @@
+# 비밀 정보 — 절대 커밋 금지
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Node (Back/ 은 정적분석기 oxlint 하나 때문에 node_modules 가 생긴다)
+node_modules/
+
+# 로그
+*.log
+Back/logs/
+
+# 캐시
+Back/cache/
+
+# 개인 환경 설정 (모델·권한 등. 사람마다 다르다)
+.claude/settings.local.json

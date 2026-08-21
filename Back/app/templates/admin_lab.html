@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>실험실 · RepoDive 관리자</title>
+<link rel="stylesheet" href="/admin/admin.css">
+</head>
+<body>
+<nav>
+  <div class="brand">RepoDive<span>관리자</span></div>
+  <a href="/admin">홈</a>
+  <a href="/admin/lab" class="active">실험실</a>
+  <a href="/admin/runs">실행 기록</a>
+  <a href="/admin/usage">사용량</a>
+  <a href="/admin/search">검색 품질</a>
+  <a href="/admin/snapshots">스냅샷</a>
+</nav>
+<main>
+<h1>실험실 <span class="muted">— 모델 · effort 비교</span></h1>
+
+<fieldset>
+  <legend>실행</legend>
+  <div class="row">
+    <div><label>GitHub URL</label>
+      <input type="text" id="url" placeholder="https://github.com/owner/repo"></div>
+    <div><label>모델</label><select id="model"></select></div>
+    <div><label>effort</label><select id="effort"></select></div>
+    <div><button id="go">실행</button></div>
+    <div id="status" class="muted"></div>
+  </div>
+  <div>
+    <label>시스템 프롬프트 <span id="promptReset" class="muted" style="cursor:pointer">(기본값으로)</span></label>
+    <textarea id="prompt"></textarea>
+  </div>
+</fieldset>
+
+<fieldset id="resultBox" style="display:none">
+  <legend>결과 <span class="muted">— 전체 기록은 <a href="/admin/runs">실행 기록</a>에서</span></legend>
+  <div id="resultMeta" class="muted" style="font-size:14px; margin-bottom:12px"></div>
+  <pre id="resultText" style="white-space:pre-wrap; word-break:break-word; font-size:14px;
+       background:var(--panel); padding:12px; border-radius:6px; max-height:50vh; overflow:auto"></pre>
+</fieldset>
+
+</main>
+
+<script>
+let CONFIG = null;
+
+const $ = (id) => document.getElementById(id);
+const fmt = (n) => n == null ? "—" : n.toLocaleString();
+const cost = (c) => c == null ? "—" : "$" + c.toFixed(4);
+
+async function loadConfig() {
+  CONFIG = await (await fetch("/admin/api/config")).json();
+  $("model").innerHTML = CONFIG.models
+    .map((m) => `<option value="${m.id}">${m.id}</option>`).join("");
+  $("effort").innerHTML = CONFIG.effort_levels
+    .map((e) => `<option value="${e}">${e}</option>`).join("");
+  $("model").value = CONFIG.default_model;
+  $("effort").value = CONFIG.default_effort;
+  $("prompt").value = CONFIG.default_prompt;
+  syncEffort();
+}
+
+// effort 미지원 모델(haiku)에서는 셀렉트를 잠근다 — 보내면 API가 거부한다.
+function syncEffort() {
+  const m = CONFIG.models.find((x) => x.id === $("model").value);
+  const supported = m && m.effort;
+  $("effort").disabled = !supported;
+  $("effort").title = supported ? "" : "이 모델은 effort를 지원하지 않습니다";
+}
+
+$("model").addEventListener("change", syncEffort);
+$("promptReset").addEventListener("click", () => { $("prompt").value = CONFIG.default_prompt; });
+
+$("go").addEventListener("click", async () => {
+  const url = $("url").value.trim();
+  if (!url) return;
+  $("go").disabled = true;
+  $("status").className = "muted";
+  $("status").textContent = "실행 중…";
+  const started = Date.now();
+  try {
+    const res = await fetch("/admin/api/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        github_url: url,
+        model: $("model").value,
+        effort: $("effort").value,
+        system_prompt: $("prompt").value,
+      }),
+    });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.detail || res.status);
+    $("status").className = "ok";
+    $("status").textContent = `완료 ${((Date.now() - started) / 1000).toFixed(1)}s`;
+    $("resultBox").style.display = "";
+    $("resultMeta").textContent =
+      `${body.repo} · ${body.model}${body.effort ? " · " + body.effort : ""} · `
+      + `fetch ${body.fetch_ms}ms / LLM ${body.llm_ms}ms · `
+      + `in ${fmt(body.input_tokens)} out ${fmt(body.output_tokens)} `
+      + `캐시쓰기 ${fmt(body.cache_write_tokens)} 읽기 ${fmt(body.cache_read_tokens)} · ${cost(body.cost_usd)}`;
+    $("resultText").textContent = body.summary;
+  } catch (err) {
+    $("status").className = "err";
+    $("status").textContent = String(err.message || err);
+  } finally {
+    $("go").disabled = false;
+  }
+});
+
+loadConfig();
+</script>
+</body>
+</html>

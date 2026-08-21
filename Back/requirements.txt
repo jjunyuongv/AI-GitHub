@@ -1,0 +1,28 @@
+fastapi>=0.115
+uvicorn[standard]>=0.34
+httpx>=0.28
+anthropic>=0.69
+python-dotenv>=1.0
+pydantic>=2.10
+psycopg[binary,pool]>=3.2
+pytest>=8.0
+
+# RAG (코드 검색). 임베딩은 로컬 ONNX 라 API 호출도 과금도 없다.
+# torch 는 필요 없다 — fastembed 가 onnxruntime 으로 돈다.
+#
+# **상한이 필요한 이유: fastembed 가 모델의 pooling 방식을 바꾼 전례가 있다.**
+# 0.5.1 이후 e5-large 가 CLS → mean pooling 으로 바뀌었고(라이브러리가 직접 경고한다),
+# 같은 일이 또 일어나면 **같은 코드·같은 모델 이름인데 벡터가 달라진다.**
+# 그러면 저장된 인덱스는 옛 방식, 새 질의는 새 방식으로 계산되어 섞이는데
+# 오류가 나지 않아 검색 품질만 조용히 떨어진다.
+# 올릴 때는 tests/test_embeddings.py 의 검증 범위도 함께 올리고 재색인할 것.
+fastembed>=0.8,<0.9
+tree-sitter>=0.26
+tree-sitter-language-pack>=1.14
+pgvector>=0.5
+
+# 정적분석. **설정도 의존성도 읽지 않는 린터라서** 고른 것이다 —
+# ESLint 는 eslint.config.js(=JS 코드)를 실행하고 npm install(=postinstall 실행)이
+# 필요해서, 임의의 저장소를 받는 서비스에서는 남의 코드를 우리가 실행하게 된다.
+# 없어도 서비스는 돈다 (정적분석 섹션만 빠진다).
+ruff>=0.16

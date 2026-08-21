@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>사용량 · RepoDive 관리자</title>
+<link rel="stylesheet" href="/admin/admin.css">
+<style>
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+  .stat { border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; background: var(--panel); }
+  .stat .label { color: var(--muted); font-size: 13px; }
+  .stat .value { font-size: 22px; font-variant-numeric: tabular-nums; }
+  .bar { height: 6px; border-radius: 3px; background: var(--accent); min-width: 2px; }
+  .meter { height: 8px; border-radius: 4px; background: var(--border); overflow: hidden; margin-top: 8px; }
+  .meter > div { height: 100%; background: var(--accent); }
+  .meter.warn > div { background: #d29922; }
+  .meter.full > div { background: #f85149; }
+</style>
+</head>
+<body>
+<nav>
+  <div class="brand">RepoDive<span>관리자</span></div>
+  <a href="/admin">홈</a>
+  <a href="/admin/lab">실험실</a>
+  <a href="/admin/runs">실행 기록</a>
+  <a href="/admin/usage" class="active">사용량</a>
+  <a href="/admin/search">검색 품질</a>
+  <a href="/admin/snapshots">스냅샷</a>
+</nav>
+<main>
+<h1>사용량 <span class="muted">— 로컬 실행 기록 · GitHub rate limit</span></h1>
+
+<fieldset>
+  <legend>오늘 사용량 <span class="muted">— 남용 방지 상한 대비 (/analyze 만 집계)</span></legend>
+  <div id="todayBody" class="stats">
+    <div class="stat">
+      <div class="label">LLM 호출</div>
+      <div class="value" id="tCalls">—</div>
+      <div class="meter" id="tCallsMeter"><div style="width:0"></div></div>
+    </div>
+    <div class="stat">
+      <div class="label">토큰</div>
+      <div class="value" id="tTokens">—</div>
+      <div class="meter" id="tTokensMeter"><div style="width:0"></div></div>
+    </div>
+    <div class="stat">
+      <div class="label">IP별 제한</div>
+      <div class="value" id="tIpLimit">—</div>
+      <div class="label" id="tIpDetail"></div>
+    </div>
+  </div>
+  <p class="muted" style="margin:10px 0 0">
+    캐시 히트는 상한에 포함되지 않습니다. 상한을 0으로 두면 그 제한은 꺼집니다.
+  </p>
+</fieldset>
+
+<fieldset>
+  <legend>Claude <span class="muted">— 이 앱이 보낸 호출만, 비용은 추정치</span></legend>
+  <div class="row">
+    <div><label>기간</label>
+      <select id="days">
+        <option value="7">최근 7일</option>
+        <option value="14">최근 14일</option>
+        <option value="30">최근 30일</option>
+        <option value="90">최근 90일</option>
+      </select></div>
+    <div><button id="reload">새로고침</button></div>
+    <div id="status" class="muted"></div>
+  </div>
+
+  <div id="claudeBody" style="display:none">
+    <div class="stats" style="margin-bottom:16px">
+      <div class="stat"><div class="label">요청 횟수</div><div class="value" id="sCalls">—</div></div>
+      <div class="stat">
+        <div class="label">캐시 히트율 <span title="LLM을 부르지 않고 캐시로 처리한 비율입니다">ⓘ</span></div>
+        <div class="value" id="sHitRate">—</div>
+        <div class="label" id="sHitDetail"></div>
+      </div>
+      <div class="stat">
+        <div class="label">비용 <span title="claude_client.pricing_for() 기준 추정치입니다. 호출 시점 단가로 계산해 기록합니다">ⓘ</span></div>
+        <div class="value" id="sCost">—</div>
+      </div>
+      <div class="stat"><div class="label">입력</div><div class="value" id="sIn">—</div></div>
+      <div class="stat"><div class="label">캐시 쓰기 <span title="입력 정가의 1.25배로 청구됩니다">ⓘ</span></div><div class="value" id="sCacheWrite">—</div></div>
+      <div class="stat"><div class="label">캐시 읽기 <span title="입력 정가의 0.1배로 청구됩니다">ⓘ</span></div><div class="value" id="sCacheRead">—</div></div>
+      <div class="stat"><div class="label">출력</div><div class="value" id="sOut">—</div></div>
+      <div class="stat"><div class="label">평균 LLM 시간</div><div class="value" id="sLatency">—</div></div>
+    </div>
+
+    <h3 style="font-size:15px">출처별</h3>
+    <table style="margin-bottom:20px">
+      <thead><tr>
+        <th>출처</th><th class="num">요청</th><th class="num">캐시</th><th class="num">히트율</th>
+        <th class="num">입력</th><th class="num">출력</th><th class="num">비용</th>
+      </tr></thead>
+      <tbody id="sourceRows"></tbody>
+    </table>
+
+    <h3 style="font-size:15px">모델별</h3>
+    <table style="margin-bottom:20px">
+      <thead><tr>
+        <th>모델</th><th class="num">LLM 호출</th>
+        <th class="num">입력</th><th class="num">캐시 쓰기</th><th class="num">캐시 읽기</th><th class="num">출력</th>
+        <th class="num">평균 LLM</th><th class="num">비용</th>
+      </tr></thead>
+      <tbody id="modelRows"></tbody>
+    </table>
+
+    <h3 style="font-size:15px">일자별</h3>
+    <table>
+      <thead><tr>
+        <th>날짜</th><th class="num">요청</th><th class="num">히트율</th><th class="num">비용</th>
+        <th class="num">출력 토큰</th><th style="width:35%"></th>
+      </tr></thead>
+      <tbody id="dailyRows"></tbody>
+    </table>
+  </div>
+</fieldset>
+
+<fieldset>
+  <legend>GitHub <span class="muted">— API rate limit</span></legend>
+  <div id="ghStatus" class="muted">불러오는 중…</div>
+  <table id="ghTable" style="display:none">
+    <thead><tr>
+      <th>리소스</th><th class="num">남음</th><th class="num">한도</th>
+      <th class="num">사용</th><th>리셋</th>
+    </tr></thead>
+    <tbody id="ghRows"></tbody>
+  </table>
+</fieldset>
+
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const fmt = (n) => n == null ? "—" : Math.round(n).toLocaleString();
+const usd = (n) => n == null ? "—" : "$" + n.toFixed(4);
+const pct = (n) => n == null ? "—" : n.toFixed(1) + "%";
+// 출처 라벨. 모르는 값은 그대로 보여준다 — 전에는 analyze 가 아니면 전부 "실험실"로
+// 적었는데, 그 뒤 chat·resummarize 가 생기면서 대화 11건이 실험실로 잘못 표시됐다.
+// source 없는 옛 기록만 "실험실"로 간주한다(집계 쪽과 같은 규칙).
+const SOURCE_LABELS = {
+  analyze: "프론트", chat: "대화", lab: "실험실",
+  resummarize: "요약 재생성", reindex: "요약 재생성",
+};
+const sourceLabel = (s) => SOURCE_LABELS[s] || s || "실험실";
+
+async function loadClaude() {
+  $("reload").disabled = true;
+  $("status").className = "muted";
+  $("status").textContent = "불러오는 중…";
+  try {
+    const res = await fetch(`/admin/api/usage?days=${$("days").value}`);
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.detail || res.status);
+    render(body);
+    $("status").className = "muted";
+    $("status").textContent = `${body.starting_at} ~ ${body.ending_at}`;
+  } catch (err) {
+    $("claudeBody").style.display = "none";
+    $("status").className = "err";
+    $("status").textContent = String(err.message || err);
+  } finally {
+    $("reload").disabled = false;
+  }
+}
+
+function renderToday(d) {
+  const meter = (id, used, limit, pct) => {
+    const el = $(id);
+    if (!limit) {
+      el.style.display = "none";
+      return;
+    }
+    el.style.display = "";
+    el.className = "meter" + (pct >= 100 ? " full" : pct >= 80 ? " warn" : "");
+    el.firstElementChild.style.width = Math.min(pct, 100) + "%";
+  };
+
+  $("tCalls").textContent = d.call_limit
+    ? `${fmt(d.calls)} / ${fmt(d.call_limit)}`
+    : `${fmt(d.calls)} (제한 없음)`;
+  meter("tCallsMeter", d.calls, d.call_limit, d.calls_pct);
+
+  $("tTokens").textContent = d.token_limit
+    ? `${fmt(d.tokens)} / ${fmt(d.token_limit)}`
+    : `${fmt(d.tokens)} (제한 없음)`;
+  meter("tTokensMeter", d.tokens, d.token_limit, d.tokens_pct);
+
+  $("tIpLimit").textContent = d.ip_limit
+    ? `${fmt(d.ip_limit)}회 / ${Math.round(d.ip_window_seconds / 60)}분`
+    : "제한 없음";
+  $("tIpDetail").textContent = `추적 중인 IP ${fmt(d.tracked_ips)}개 · ${d.date}`;
+}
+
+function render(r) {
+  const t = r.totals;
+  renderToday(r.today);
+  $("sCalls").textContent = fmt(t.calls);
+  $("sHitRate").textContent = t.calls ? pct(t.hit_rate) : "—";
+  $("sHitDetail").textContent = t.calls
+    ? `${fmt(t.cache_hits)}건 캐시 · ${fmt(t.llm_calls)}건 LLM 호출`
+    : "";
+  $("sCost").textContent = usd(t.cost_usd);
+  $("sIn").textContent = fmt(t.input_tokens);
+  $("sCacheWrite").textContent = fmt(t.cache_write_tokens);
+  $("sCacheRead").textContent = fmt(t.cache_read_tokens);
+  $("sOut").textContent = fmt(t.output_tokens);
+  $("sLatency").textContent = t.llm_calls ? fmt(t.avg_llm_ms) + "ms" : "—";
+
+  $("sourceRows").innerHTML = r.by_source.length ? r.by_source.map((s) => `
+    <tr>
+      <td><span class="tag">${sourceLabel(s.source)}</span></td>
+      <td class="num">${fmt(s.calls)}</td>
+      <td class="num muted">${fmt(s.cache_hits)}</td>
+      <td class="num">${pct(s.hit_rate)}</td>
+      <td class="num">${fmt(s.input_tokens)}</td>
+      <td class="num">${fmt(s.output_tokens)}</td>
+      <td class="num">${usd(s.cost_usd)}</td>
+    </tr>`).join("") : `<tr><td colspan="7" class="muted">기록 없음</td></tr>`;
+
+  $("modelRows").innerHTML = r.by_model.length ? r.by_model.map((m) => `
+    <tr>
+      <td>${m.model}</td>
+      <td class="num">${fmt(m.llm_calls)}</td>
+      <td class="num">${fmt(m.input_tokens)}</td>
+      <td class="num muted">${fmt(m.cache_write_tokens)}</td>
+      <td class="num muted">${fmt(m.cache_read_tokens)}</td>
+      <td class="num">${fmt(m.output_tokens)}</td>
+      <td class="num muted">${fmt(m.avg_llm_ms)}ms</td>
+      <td class="num">${usd(m.cost_usd)}</td>
+    </tr>`).join("") : `<tr><td colspan="8" class="muted">기록 없음</td></tr>`;
+
+  const maxCost = Math.max(...r.daily.map((d) => d.cost_usd), 0.0001);
+  $("dailyRows").innerHTML = r.daily.map((d) => `
+    <tr>
+      <td class="muted">${d.date}</td>
+      <td class="num">${d.calls ? fmt(d.calls) : '<span class="muted">—</span>'}</td>
+      <td class="num muted">${d.calls ? pct(d.hit_rate) : '<span class="muted">—</span>'}</td>
+      <td class="num">${d.calls ? usd(d.cost_usd) : '<span class="muted">—</span>'}</td>
+      <td class="num">${d.calls ? fmt(d.output_tokens) : '<span class="muted">—</span>'}</td>
+      <td><div class="bar" style="width:${(d.cost_usd / maxCost) * 100}%"></div></td>
+    </tr>`).join("");
+
+  $("claudeBody").style.display = "";
+}
+
+async function loadGithub() {
+  try {
+    const res = await fetch("/admin/api/github");
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.detail || res.status);
+    $("ghRows").innerHTML = body.resources.map((r) => `
+      <tr>
+        <td>${r.name}</td>
+        <td class="num">${fmt(r.remaining)}</td>
+        <td class="num muted">${fmt(r.limit)}</td>
+        <td class="num muted">${fmt(r.used)}</td>
+        <td class="muted">${new Date(r.reset * 1000).toLocaleTimeString()}</td>
+      </tr>`).join("");
+    $("ghTable").style.display = "";
+    $("ghStatus").textContent = body.authenticated
+      ? "GITHUB_TOKEN 사용 중"
+      : "토큰 없음 — core 한도가 시간당 60입니다";
+  } catch (err) {
+    $("ghStatus").className = "err";
+    $("ghStatus").textContent = String(err.message || err);
+  }
+}
+
+$("reload").addEventListener("click", loadClaude);
+$("days").addEventListener("change", loadClaude);
+
+loadClaude();
+loadGithub();
+</script>
+</body>
+</html>

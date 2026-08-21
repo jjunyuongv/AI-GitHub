@@ -1,0 +1,652 @@
+:root {
+  color-scheme: dark;
+
+  --canvas: #0d1117;
+  --canvas-subtle: #161b22;
+  --canvas-inset: #010409;
+  --border: #30363d;
+  --border-muted: #21262d;
+  --fg: #e6edf3;
+  --fg-muted: #8b949e;
+  --accent: #58a6ff;
+  --success: #238636;
+  --success-hover: #2ea043;
+  --danger: #f85149;
+
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans KR",
+    Helvetica, Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+body {
+  margin: 0;
+  background: var(--canvas);
+  color: var(--fg);
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+.octicon {
+  fill: currentColor;
+  flex: none;
+}
+
+/* --- 상단 바 --- */
+.topbar {
+  background: var(--canvas-inset);
+  border-bottom: 1px solid var(--border);
+}
+
+.topbar-inner {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 12px 32px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 1rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.topbar form {
+  display: flex;
+  flex: 1;
+  gap: 8px;
+  max-width: 640px;
+}
+
+/* 같은 폼이 첫 화면(.landing)과 상단 바(.topbar) 양쪽에 쓰인다. 크기만 아래에서 갈린다. */
+.topbar input,
+.landing input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 12px;
+  font: inherit;
+  font-size: 0.875rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--canvas);
+  color: var(--fg);
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.topbar input::placeholder,
+.landing input::placeholder {
+  color: #6e7681;
+}
+
+.topbar input:focus,
+.landing input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(31, 111, 235, 0.3);
+}
+
+.topbar button,
+.landing button {
+  padding: 5px 16px;
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  color: #fff;
+  background: var(--success);
+  border: 1px solid rgba(240, 246, 252, 0.1);
+  border-radius: 6px;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+
+.topbar button:hover:not(:disabled),
+.landing button:hover:not(:disabled) {
+  background: var(--success-hover);
+}
+
+.topbar button:disabled,
+.landing button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* --- 첫 화면 --- */
+/* 분석 전에는 링크 입력 하나만 남긴다. 상단 바·사이드바는 그리지 않는다. */
+.landing {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px;
+  /* 패딩이 100vh 에 더해지면 그만큼 스크롤바가 생긴다. */
+  box-sizing: border-box;
+}
+
+.landing-inner {
+  width: 100%;
+  max-width: 560px;
+  text-align: center;
+}
+
+.brand-lg {
+  justify-content: center;
+  margin: 0 0 12px;
+  font-size: 1.75rem;
+}
+
+.brand-lg .octicon {
+  width: 24px;
+  height: 24px;
+}
+
+.landing-lead {
+  margin: 0 0 24px;
+  color: var(--fg-muted);
+}
+
+.landing form {
+  display: flex;
+  gap: 8px;
+}
+
+/* 첫 화면의 폼은 시선이 모이는 곳이라 상단 바보다 크게 잡는다. */
+.landing input {
+  padding: 10px 14px;
+  font-size: 1rem;
+}
+
+.landing button {
+  padding: 10px 20px;
+  font-size: 1rem;
+}
+
+/* 진행 표시가 폼 자리를 그대로 이어받는다 (기본 여백은 본문용이라 지운다). */
+.landing .progress {
+  margin: 0;
+  max-width: none;
+  text-align: left;
+}
+
+.landing .error {
+  margin: 16px 0 0;
+  text-align: left;
+}
+
+/* --- 레포 헤더 --- */
+.repo-head {
+  border-bottom: 1px solid var(--border);
+}
+
+.repo-head-inner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 16px 32px;
+  font-size: 1.25rem;
+}
+
+.repo-head .octicon {
+  color: var(--fg-muted);
+}
+
+.repo-head .owner,
+.repo-head .slash {
+  color: var(--accent);
+}
+
+.repo-head strong {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.repo-head .badge {
+  padding: 0 7px;
+  font-size: 0.75rem;
+  line-height: 18px;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-radius: 2em;
+}
+
+/* --- 본문 --- */
+main {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 24px 32px 96px;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 296px;
+  gap: 24px;
+  align-items: start;
+}
+
+/* 왼쪽 컬럼: 요약 아래에 대화가 이어진다. 그리드 아이템은 여전히 둘이라
+   좁은 화면의 .sidebar { order: -1 } 이 그대로 동작한다. */
+.main-col {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  min-width: 0;
+}
+
+/* --- 분석 진행 표시 --- */
+.progress {
+  max-width: 440px;
+  margin: 64px auto;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--canvas-subtle);
+}
+
+.progress h3 {
+  margin: 0 0 12px;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.progress ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.progress li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  font-size: 0.875rem;
+  color: var(--fg-muted);
+}
+
+.progress li.done,
+.progress li.active {
+  color: var(--fg);
+}
+
+.progress .mark {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+}
+
+.progress li.done .mark {
+  color: var(--success-hover);
+}
+
+.progress .elapsed {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
+
+.progress-note {
+  margin: 12px 0 0;
+  padding-top: 12px;
+  font-size: 0.75rem;
+  color: var(--fg-muted);
+  border-top: 1px solid var(--border-muted);
+}
+
+.spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation-duration: 2.4s;
+  }
+}
+
+.error {
+  padding: 12px 14px;
+  border: 1px solid rgba(248, 81, 73, 0.4);
+  border-radius: 6px;
+  background: rgba(248, 81, 73, 0.1);
+  color: var(--danger);
+}
+
+/* --- 사이드바 (About) --- */
+.sidebar h3 {
+  margin: 0 0 8px;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.sidebar p {
+  margin: 0 0 16px;
+  font-size: 0.875rem;
+  color: var(--fg-muted);
+}
+
+.sidebar p.muted {
+  font-style: italic;
+}
+
+.sidebar ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sidebar li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 0.875rem;
+  color: var(--fg-muted);
+}
+
+.lang-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* --- 마크다운 본문 --- */
+.markdown {
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--canvas);
+}
+
+.markdown > :first-child {
+  margin-top: 0;
+}
+
+.markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown h1,
+.markdown h2 {
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--border-muted);
+}
+
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4 {
+  margin: 24px 0 16px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.markdown h1 {
+  font-size: 1.5rem;
+}
+
+.markdown h2 {
+  font-size: 1.25rem;
+}
+
+.markdown h3 {
+  font-size: 1rem;
+}
+
+.markdown p,
+.markdown ul,
+.markdown ol {
+  margin: 0 0 16px;
+}
+
+.markdown ul,
+.markdown ol {
+  padding-left: 2em;
+}
+
+.markdown li + li {
+  margin-top: 0.25em;
+}
+
+.markdown code {
+  padding: 0.2em 0.4em;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+  font-size: 0.85em;
+  background: rgba(110, 118, 129, 0.4);
+  border-radius: 6px;
+}
+
+.markdown pre {
+  padding: 16px;
+  overflow-x: auto;
+  background: var(--canvas-subtle);
+  border: 1px solid var(--border-muted);
+  border-radius: 6px;
+}
+
+.markdown pre code {
+  padding: 0;
+  background: transparent;
+  border-radius: 0;
+}
+
+.markdown blockquote {
+  margin: 0 0 16px;
+  padding: 0 1em;
+  color: var(--fg-muted);
+  border-left: 0.25em solid var(--border);
+}
+
+.markdown table {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+  margin-bottom: 16px;
+  border-collapse: collapse;
+}
+
+.markdown th,
+.markdown td {
+  padding: 6px 13px;
+  border: 1px solid var(--border);
+}
+
+.markdown th {
+  background: var(--canvas-subtle);
+  font-weight: 600;
+}
+
+.markdown hr {
+  height: 1px;
+  margin: 24px 0;
+  background: var(--border);
+  border: 0;
+}
+
+/* --- 대화 --- */
+.chat {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.chat h3 {
+  margin: 0;
+  padding-bottom: 12px;
+  font-size: 1rem;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border-muted);
+}
+
+.chat-empty,
+.chat-pending {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--fg-muted);
+}
+
+.chat-pending .elapsed {
+  margin-left: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 코드 색인이 끝나기 전까지 뜨는 안내. 끝나면 사라진다. */
+.chat-index {
+  margin: 0;
+  padding: 8px 10px;
+  border-left: 2px solid var(--accent);
+  background: var(--canvas-inset);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--fg-muted);
+}
+
+.chat-index.failed {
+  border-left-color: var(--danger);
+}
+
+.msg {
+  padding: 10px 12px;
+  border: 1px solid var(--border-muted);
+  border-radius: 6px;
+  background: var(--canvas-subtle);
+}
+
+.msg.user {
+  align-self: flex-end;
+  max-width: 80%;
+  border-color: var(--accent);
+  background: rgba(88, 166, 255, 0.1);
+  white-space: pre-wrap;
+}
+
+/* 답변은 .markdown 의 본문 스타일만 빌려 쓴다. 바깥 상자는 .msg 가 이미 그렸다. */
+.msg .markdown {
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
+.chat form {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.chat textarea {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--canvas);
+  color: var(--fg);
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.chat textarea::placeholder {
+  color: #6e7681;
+}
+
+.chat textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(31, 111, 235, 0.3);
+}
+
+.chat button {
+  padding: 8px 16px;
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  color: #fff;
+  background: var(--success);
+  border: 1px solid rgba(240, 246, 252, 0.1);
+  border-radius: 6px;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+
+.chat button:hover:not(:disabled) {
+  background: var(--success-hover);
+}
+
+.chat button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* --- 좁은 화면 --- */
+@media (max-width: 900px) {
+  .topbar-inner,
+  .repo-head-inner,
+  main {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sidebar {
+    order: -1;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+}
+
+@media (max-width: 600px) {
+  .topbar-inner {
+    flex-wrap: wrap;
+  }
+
+  .topbar form {
+    max-width: none;
+  }
+
+  /* 첫 화면의 폼은 버튼이 눌리는 것보다 아래로 내려가는 편이 낫다. */
+  .landing form {
+    flex-wrap: wrap;
+  }
+
+  .landing button {
+    width: 100%;
+  }
+}
