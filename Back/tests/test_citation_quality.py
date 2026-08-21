@@ -1,4 +1,4 @@
-"""인용 정확도 — RAG 경로와 전체 주입 경로를 **같은 자로** 비교한다.
+"""답변 품질 — 인용 정확도와 거절 정확도를 **같은 자로** 잰다.
 
 **과금된다.** 질의마다 Claude 를 실제로 부른다. `-m billed` 를 명시했을 때만 돈다:
 
@@ -19,6 +19,29 @@ Recall@8·MRR 은 검색 순위 지표인데 전체 주입에는 검색이 없�
 **올라야만** 우회를 켠다. 이 기준을 결과를 보고 정하면 측정이 아니라 사후 합리화가 된다.
 "큰 덩어리에 섞이면 초점이 흐려진다"는 실패 방식이 이 저장소에 이미 기록돼 있어
 (plan.md, `py_ko_01` 1→10위) 전체 주입이 지는 결과는 실제로 가능하다.
+
+## 답변 품질 판정 기준 — tool use 도입용 (측정 전에 고정한다)
+
+위 기준은 "전체 주입 우회를 켤 것인가"의 자다. 아래는 **tool use 를 붙일 것인가**의 자다.
+
+    A. 인용 정확도가 기준선보다 떨어지면 기각.
+    B. A 가 동률이면 거절 정확도를 본다. 떨어지면 기각.
+    C. A·거절이 올라도 질문당 비용이 기준선의 COST_RATIO_LIMIT 배를 넘으면
+       전면 도입하지 않고 "큰 저장소 전용"으로만 켠다.
+
+### 왜 거절 축이 따로 필요한가
+
+검색을 반복하는 경로는 계속 뒤지다 지어낼 여지가, 한 번 검색하고 끝내는 경로보다 크다.
+그런데 인용 정확도는 **정답이 있는 질의**에서만 재므로 그 실패를 못 잡는다 —
+정답이 없는 질의에서는 짚을 파일이 없어 **날조와 침묵이 똑같이 0점**으로 보인다.
+정답이 없는 질의(`ABSENT_SETS`)를 따로 두고 "규정대로 거절했는가"를 세야 차이가 드러난다.
+
+### 이 자의 한계 — 알고 쓴다
+
+문구 매칭이라 "KeyStoreGetter 는 읽어 오기만 하고 만료 검사는 없습니다"처럼 **내용은
+맞는데 규정 문구를 안 쓴 답변**은 실패로 센다. 재는 것은 정확히 "규정대로 거절했는가"이고,
+"지어내지 않았는가"의 대리 지표다. 두 경로에 같은 자를 대므로 **비교**에는 쓸 수 있지만,
+절대값을 "이만큼 지어낸다"로 읽으면 안 된다.
 """
 
 import json
@@ -34,17 +57,34 @@ from app.core.chunker import chunk_files
 from app.db import chunks as chunk_store
 from app.db import index_status, pool
 from app.services import claude_client
-from app.services.context_builder import build_source_bundle
-from app.services.indexer import format_snippets, search_code
-from tests.search_eval_dataset import EVAL_SET_VERSION, EVAL_SETS
+from app.services.indexer import format_snippets, measure_bundle, search_code
+from tests.search_eval_dataset import (
+    ABSENT_SET_VERSION,
+    ABSENT_SETS,
+    EVAL_SET_VERSION,
+    EVAL_SETS,
+)
 from tests.test_search_quality import _snapshot_for, _source_files
 
 pytestmark = [pytest.mark.evaluation, pytest.mark.billed]
 
-# 우회 검수 대상. 앞의 둘은 임계값을 넘어 이 비교가 성립하지 않는다.
-SET_NAME = "apns4j"
-
 LOG_PATH = Path(__file__).resolve().parents[1] / "logs" / "citation_evals.jsonl"
+
+# 질문당 비용이 기준선의 몇 배를 넘으면 전면 도입을 접는가 (위 판정 기준 C).
+# 3배는 "큰 저장소에서만 켜면 되는" 구간의 하한으로 잡은 값이다 — 임의의 저장소를
+# 받는 서비스라 평균 질문 하나의 값이 세 배가 되면 우회 판정과 같은 층위의 결정이 된다.
+COST_RATIO_LIMIT = 3.0
+
+# 대화의 두 번째 메시지로 넣을 요약. 실제 서비스에서는 LLM 이 만든 요약이 여기 온다.
+# 세트마다 고정 문장을 쓴다 — 매번 요약을 새로 만들면 그 편차가 두 경로의 차이에 섞인다.
+# (평가셋이 아니라 **대화 하네스의 입력**이라 search_eval_dataset 에 두지 않는다)
+SET_SUMMARIES = {
+    "air": "사내 그룹웨어입니다. 전자결재·일정·채팅·보고서를 다루는 Spring Boot 애플리케이션입니다.",
+    "marryday": "웨딩드레스 가상 피팅 서비스입니다. FastAPI 백엔드와 React 프론트로 이루어져 있습니다.",
+    "apns4j": "APNs 푸시 알림을 보내는 Java 라이브러리입니다.",
+}
+
+ARM_LABELS = {"rag": "RAG", "full": "전체주입"}
 
 # 대화 이력 없이 질의 하나씩 독립으로 묻는다 — 앞 질문의 답이 다음 답에 섞이면
 # 두 경로의 차이가 아니라 대화 순서의 차이를 재게 된다.
@@ -52,8 +92,30 @@ NO_HISTORY: list[dict] = []
 
 
 def _cited(answer: str, case: dict) -> bool:
-    """답변이 정답 파일을 짚었는가. answers 중 하나라도 맞으면 정답이다."""
-    return any(a["path_suffix"] in answer for a in case["answers"])
+    """답변이 정답 파일을 짚었는가. answers 중 하나라도 맞으면 정답이다.
+
+    **정답이 없는 질의(kind="absent")를 넣으면 언제나 False 다.** answers 가 없어
+    any([]) 가 되기 때문이다. 그래서 거절 질의를 기존 목록에 섞으면 안 된다 —
+    섞으면 인용 정확도가 조용히 희석되고, 그 하락이 개선 실패로 오독된다.
+    """
+    return any(a["path_suffix"] in answer for a in case.get("answers", []))
+
+
+def _refused(answer: str) -> bool:
+    """규정된 거절 문구를 썼는가. 둘 중 하나라도 있으면 거절이다.
+
+    두 팔 모두 두 문구를 다 인정한다. 전체 주입에서 "검색된 범위에는 없습니다"는
+    프롬프트 위반이지만(전부 왔으므로), 그건 **형식 위반이지 날조가 아니다** —
+    이 축이 재려는 것은 지어냈는가다.
+    """
+    return any(p in answer for p in claude_client.REFUSAL_PHRASES)
+
+
+def _score(answer: str, case: dict) -> bool:
+    """이 답변이 이 질의에서 옳은가. 질의 종류에 따라 다른 자를 댄다."""
+    if case["kind"] == "absent":
+        return _refused(answer)
+    return _cited(answer, case)
 
 
 def _ensure_index(snapshot_id: int, repo: tuple[str, str], files: dict) -> None:
@@ -91,8 +153,11 @@ def _ask(context: str, summary: str, case: dict, *, snippets: str, bundle: str) 
     return {
         "id": case["id"],
         "kind": case["kind"],
-        "cited": _cited(result["text"], case),
+        "ok": _score(result["text"], case),
         "answer": result["text"],
+        # 지연은 판정 기준 B·C 와 함께 보는 축이다. tool use 를 붙이면 검색을 여러 번
+        # 도느라 여기가 가장 크게 움직인다 — 버리면 그 변화를 사후에 못 잰다.
+        "llm_ms": result["llm_ms"],
         "input_tokens": result["input_tokens"],
         "output_tokens": result["output_tokens"],
         "cache_write_tokens": result["cache_write_tokens"],
@@ -101,44 +166,76 @@ def _ask(context: str, summary: str, case: dict, *, snippets: str, bundle: str) 
     }
 
 
-def _summarize(rows: list[dict]) -> dict:
-    def rate(kind: str | None) -> float:
-        subset = [r for r in rows if kind is None or r["kind"] == kind]
-        return round(sum(r["cited"] for r in subset) / len(subset), 4) if subset else 0.0
+def _rate(rows: list[dict]) -> float:
+    return round(sum(r["ok"] for r in rows) / len(rows), 4) if rows else 0.0
 
+
+def _summarize(rows: list[dict]) -> dict:
+    """팔 하나의 집계.
+
+    **인용 정확도의 모수에서 absent 행을 뺀다.** 안 빼면 지난 기록(set_version=2,
+    16질의)과 같은 칸에서 비교가 끊긴다 — 거절 질의를 더한 것이 인용 정확도를 떨어뜨린
+    것처럼 보인다. `EVAL_SET_VERSION` 을 2 로 둔 이유가 이것이다.
+    """
+    answerable = [r for r in rows if r["kind"] != "absent"]
+    absent = [r for r in rows if r["kind"] == "absent"]
     return {
-        "citation_accuracy": rate(None),
-        "korean": rate("korean"),
-        "identifier": rate("identifier"),
+        "citation_accuracy": _rate(answerable),
+        "korean": _rate([r for r in rows if r["kind"] == "korean"]),
+        "identifier": _rate([r for r in rows if r["kind"] == "identifier"]),
+        "refusal_accuracy": _rate(absent),
         "cost_usd": round(sum(r["cost_usd"] for r in rows), 4),
+        "avg_cost_usd": round(sum(r["cost_usd"] for r in rows) / len(rows), 6),
+        "avg_llm_ms": round(sum(r["llm_ms"] for r in rows) / len(rows)),
         "cache_write_tokens": sum(r["cache_write_tokens"] for r in rows),
         "cache_read_tokens": sum(r["cache_read_tokens"] for r in rows),
     }
 
 
-def test_compare_citation_accuracy(capsys):
-    if not pool.is_enabled():
-        pytest.skip("DATABASE_URL 이 없어 인용 정확도 측정을 건너뜁니다.")
-    if not config.ANTHROPIC_API_KEY:
-        pytest.skip("ANTHROPIC_API_KEY 가 없어 인용 정확도 측정을 건너뜁니다.")
+def _arms_for(tokens: int) -> tuple[str, ...]:
+    """이 저장소에서 성립하는 팔.
 
-    spec = EVAL_SETS[SET_NAME]
+    **저장소 이름으로 가르지 않는다**(CLAUDE.md §7). 프로덕션이 우회를 판정할 때 쓰는
+    바로 그 기준(번들 토큰 수 ≤ 임계값)을 그대로 쓴다 — 하네스와 서비스의 기준이
+    갈리면 "여기서는 성립하는데 서비스에서는 안 켜지는" 비교를 하게 된다.
+    임계값을 넘는 저장소에서 전체 주입은 아예 성립하지 않으므로 RAG 한 팔만 돈다.
+    """
+    if tokens and tokens <= config.FULL_INJECTION_MAX_TOKENS:
+        return ("rag", "full")
+    return ("rag",)
+
+
+@pytest.mark.parametrize("set_name", list(EVAL_SETS))
+def test_measure_answer_quality(set_name, capsys):
+    """세트 하나를 성립하는 모든 팔로 돌려 인용·거절 정확도를 재고 기록한다.
+
+    단정하지 않는다 — 측정이다. 판정은 위 docstring 의 기준으로 사람이 한다.
+    """
+    if not pool.is_enabled():
+        pytest.skip("DATABASE_URL 이 없어 답변 품질 측정을 건너뜁니다.")
+    if not config.ANTHROPIC_API_KEY:
+        pytest.skip("ANTHROPIC_API_KEY 가 없어 답변 품질 측정을 건너뜁니다.")
+
+    spec = EVAL_SETS[set_name]
     repo = spec["repo"]
+    cases = [*spec["queries"], *ABSENT_SETS[set_name]]
     files = _source_files(repo)
     snapshot_id = _snapshot_for(repo)
     _ensure_index(snapshot_id, repo, files)
 
-    bundle = build_source_bundle(files)
+    # 무과금이다 — 토큰 계산 엔드포인트는 추론을 돌리지 않는다.
+    bundle, bundle_tokens = measure_bundle(files)
+    arms = _arms_for(bundle_tokens)
     context = f"## 레포지토리 정보\n- 이름: {repo[0]}/{repo[1]}"
-    summary = "APNs 푸시 알림을 보내는 Java 라이브러리입니다."
+    summary = SET_SUMMARIES[set_name]
 
     started = time.perf_counter()
     results: dict[str, list[dict]] = {}
-    for path_name in ("rag", "full"):
+    for arm in arms:
         rows = []
-        for case in spec["queries"]:
+        for case in cases:
             snippets = ""
-            if path_name == "rag":
+            if arm == "rag":
                 snippets = format_snippets(
                     search_code(snapshot_id, case["query"], table=config.CHUNK_TABLE)
                 )
@@ -146,51 +243,83 @@ def test_compare_citation_accuracy(capsys):
                 _ask(
                     context, summary, case,
                     snippets=snippets,
-                    bundle=bundle if path_name == "full" else "",
+                    bundle=bundle if arm == "full" else "",
                 )
             )
-        results[path_name] = rows
+        results[arm] = rows
 
-    rag, full = _summarize(results["rag"]), _summarize(results["full"])
+    totals = {arm: _summarize(rows) for arm, rows in results.items()}
 
-    print(f"\n{repo[0]}/{repo[1]} — 질의 {len(spec['queries'])}개 · "
-          f"{int(time.perf_counter() - started)}초 · 번들 {len(bundle):,}자")
-    print(f"\n{'지표':<16} {'RAG':>10} {'전체주입':>10}")
+    with capsys.disabled():
+        _print_report(set_name, repo, cases, arms, results, totals,
+                      bundle, bundle_tokens, time.perf_counter() - started)
+
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "repo": f"{repo[0]}/{repo[1]}",
+        "set": set_name,
+        "set_version": EVAL_SET_VERSION,
+        "absent_set_version": ABSENT_SET_VERSION,
+        "model": claude_client.DEFAULT_MODEL,
+        "bundle_chars": len(bundle),
+        "bundle_tokens": bundle_tokens,
+        # 어느 팔이 돌았는지 기록에 남긴다. 옛 기록에는 이 키가 없으므로 읽는 쪽은
+        # ("rag", "full") 로 폴백한다 (tests/test_line_accuracy.py).
+        "arms": list(arms),
+    }
+    for arm in arms:
+        record[arm] = {**totals[arm], "rows": results[arm]}
+    with LOG_PATH.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    # 단정하지 않는다 — 측정이다. 다만 하네스가 깨진 경우는 잡는다.
+    assert all(results[arm] for arm in arms)
+
+
+def _print_report(set_name, repo, cases, arms, results, totals,
+                  bundle, bundle_tokens, elapsed) -> None:
+    """팔 개수에 맞춰 표를 그린다. 팔이 하나면 비교 열도 판정 줄도 뜨지 않는다."""
+    labels = [ARM_LABELS[a] for a in arms]
+    print(f"\n{repo[0]}/{repo[1]} [{set_name}] — 질의 {len(cases)}개 "
+          f"(거절 {sum(1 for c in cases if c['kind'] == 'absent')}개) · "
+          f"팔 {'·'.join(labels)} · {int(elapsed)}초")
+    print(f"번들 {len(bundle):,}자 / {bundle_tokens:,}토큰 "
+          f"(전체 주입 임계값 {config.FULL_INJECTION_MAX_TOKENS:,})")
+
+    print("\n" + f"{'지표':<16}" + "".join(f"{label:>12}" for label in labels))
     for label, key in (
         ("인용 정확도", "citation_accuracy"),
         ("  한국어", "korean"),
         ("  식별자", "identifier"),
+        ("거절 정확도", "refusal_accuracy"),
         ("비용(USD)", "cost_usd"),
+        ("질문당 비용", "avg_cost_usd"),
+        ("질문당 지연(ms)", "avg_llm_ms"),
     ):
-        print(f"{label:<16} {rag[key]:>10} {full[key]:>10}")
+        print(f"{label:<16}" + "".join(f"{totals[a][key]:>12}" for a in arms))
 
-    print(f"\n{'id':<10} {'종류':<11} {'RAG':>5} {'전체':>5}  질의")
-    by_id = {r["id"]: r for r in results["full"]}
-    for r in results["rag"]:
-        f = by_id[r["id"]]
-        mark = "" if r["cited"] == f["cited"] else ("  ← 전체주입 우세" if f["cited"] else "  ← RAG 우세")
-        case = next(c for c in spec["queries"] if c["id"] == r["id"])
-        print(f"{r['id']:<10} {r['kind']:<11} {'O' if r['cited'] else 'X':>5} "
-              f"{'O' if f['cited'] else 'X':>5}  {case['query']}{mark}")
+    print("\n" + f"{'id':<10} {'종류':<11}" + "".join(f"{lb:>7}" for lb in labels) + "  질의")
+    by_id = {arm: {r["id"]: r for r in rows} for arm, rows in results.items()}
+    for case in cases:
+        marks = "".join(
+            f"{'O' if by_id[a][case['id']]['ok'] else 'X':>7}" for a in arms
+        )
+        note = ""
+        if len(arms) > 1:
+            scores = [by_id[a][case["id"]]["ok"] for a in arms]
+            if len(set(scores)) > 1:
+                won = [ARM_LABELS[a] for a, ok in zip(arms, scores) if ok]
+                note = f"  ← {'·'.join(won)} 우세"
+        print(f"{case['id']:<10} {case['kind']:<11}{marks}  {case['query']}{note}")
 
-    verdict = (
-        "전체 주입을 켠다" if full["citation_accuracy"] > rag["citation_accuracy"]
-        else "RAG 를 유지한다"
-    )
-    print(f"\n판정: {verdict} "
-          f"(기준: 올라야만 켠다. 동률·하락이면 유지)")
-
-    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with LOG_PATH.open("a", encoding="utf-8") as f:
-        f.write(json.dumps({
-            "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            "repo": f"{repo[0]}/{repo[1]}",
-            "set_version": EVAL_SET_VERSION,
-            "model": claude_client.DEFAULT_MODEL,
-            "bundle_chars": len(bundle),
-            "rag": {**rag, "rows": results["rag"]},
-            "full": {**full, "rows": results["full"]},
-        }, ensure_ascii=False) + "\n")
-
-    # 단정하지 않는다 — 측정이다. 판정은 위 출력과 기록으로 사람이 한다.
-    assert results["rag"] and results["full"]
+    if len(arms) > 1:
+        rag, full = totals["rag"], totals["full"]
+        verdict = (
+            "전체 주입을 켠다" if full["citation_accuracy"] > rag["citation_accuracy"]
+            else "RAG 를 유지한다"
+        )
+        print(f"\n판정: {verdict} (기준: 올라야만 켠다. 동률·하락이면 유지)")
+    else:
+        print("\n이 저장소는 전체 주입 임계값을 넘어 우회 비교가 성립하지 않는다 "
+              "— RAG 한 팔의 기준선만 남긴다.")

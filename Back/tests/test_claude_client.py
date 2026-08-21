@@ -1,6 +1,11 @@
 """대화 메시지 조립. LLM 을 실제로 부르지 않는다 (토큰 절약)."""
 
-from app.services.claude_client import MAX_HISTORY_MESSAGES, build_chat_messages
+from app.services.claude_client import (
+    CHAT_SYSTEM_PROMPT,
+    MAX_HISTORY_MESSAGES,
+    REFUSAL_PHRASES,
+    build_chat_messages,
+)
 
 CONTEXT = "## 레포지토리 정보\n- 이름: React/React"
 SUMMARY = "요약 본문"
@@ -132,6 +137,21 @@ def test_short_history_is_kept_whole():
     messages = build_chat_messages(CONTEXT, SUMMARY, _history(1), "질문")
 
     assert [m["content"] for m in messages[2:-1]] == ["질문0", "답변0"]
+
+
+def test_refusal_phrases_are_in_the_chat_prompt():
+    """거절 문구 상수와 프롬프트가 갈라지지 않는가.
+
+    답변 품질 하네스는 이 문구를 **문자열로 찾아** 거절 여부를 채점한다. 프롬프트 쪽
+    표현만 바뀌면 모델은 여전히 옳게 거절하는데 하네스는 전부 실패로 세게 된다 —
+    조용히 틀리는 종류라 여기서 잡는다. 프롬프트를 고칠 때는 상수도 같이 고칠 것.
+    """
+    missing = [p for p in REFUSAL_PHRASES if p not in CHAT_SYSTEM_PROMPT]
+
+    assert not missing, (
+        f"거절 문구가 CHAT_SYSTEM_PROMPT 에 없다: {missing}."
+        " 프롬프트를 고쳤다면 claude_client 의 상수도 같이 고칠 것"
+    )
 
 
 def test_extra_message_fields_are_not_forwarded():

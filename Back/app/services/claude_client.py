@@ -61,6 +61,18 @@ def pricing_for(model: str, at: date | None = None) -> tuple[float, float] | Non
 class MissingAPIKeyError(Exception):
     pass
 
+
+# 근거가 없을 때 쓰라고 CHAT_SYSTEM_PROMPT 가 못 박은 문구. 평가 하네스가 "규정대로
+# 거절했는가"를 이 문자열로 판정한다 — 인용 정확도와 같은 방식이라 LLM 심판이 필요 없다.
+#
+# **프롬프트에 f-string 으로 끼워 넣지 않는다.** 끼워 넣으면 정합성이 자동으로 맞아
+# 보이지만, 그 순간 `test_refusal_phrases_are_in_the_chat_prompt` 가 동어반복이 되어
+# 항상 통과한다 — 문구가 갈라져 하네스가 조용히 0점을 매기는 상황을 못 잡는다.
+# 리터럴로 두고 **포함 여부를 검사**하는 쪽이 실제로 깨진다.
+NO_BASIS_PHRASE = "주어진 정보로는 알 수 없습니다"
+NOT_IN_SEARCH_PHRASE = "검색된 범위에는 없습니다"
+REFUSAL_PHRASES = (NO_BASIS_PHRASE, NOT_IN_SEARCH_PHRASE)
+
 SYSTEM_PROMPT = """당신은 GitHub 레포지토리를 분석해 개발자에게 설명하는 어시스턴트입니다.
 주어진 레포지토리 정보(README, 매니페스트 파일, 파일 목록, 그리고 있을 경우 정적분석 결과)를
 읽고 아래 형식에 맞춰 한국어 마크다운으로 정리하세요.

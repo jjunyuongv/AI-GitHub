@@ -24,6 +24,12 @@ v1 은 **청크 검색이 아니라 사실상 파일 검색을 재고 있었다.
 
 **v2 수치는 v1 보다 낮게 나오는 것이 정상이다** — 품질이 나빠진 게 아니라 측정이
 정확해진 것이다. 두 버전을 비교하지 말 것(`EVAL_SET_VERSION` 이 기록에 함께 남는다).
+
+## 거절 질의는 별개다 (`ABSENT_SETS`, 파일 아래쪽)
+
+"정답이 실제로 있는 것만"은 **검색 품질 평가셋의 규칙**이다. 답변 품질에는 반대 방향의
+질의도 필요해서 아래에 따로 두었다 — 저장소에 **없는** 기능을 묻고, 답변이 규정대로
+거절하는지를 본다. 순위 지표를 잴 수 없으므로 `EVAL_SETS` 에 합치지 않는다.
 """
 
 # 평가셋 버전. 정답 조건을 고치면 올린다 — 그러지 않으면 조건이 다른 두 측정이
@@ -455,11 +461,140 @@ APNS4J_QUERIES = [
     },
 ]
 
+# ── 거절 질의 — 저장소에 **없는** 기능을 묻는다 ────────────────────────
+#
+# 왜 따로 두는가: 위 세 목록에 섞으면 Recall@8 의 분모가 바뀌어 search_eval_log 의
+# 기존 기록과 비교가 끊긴다. 그리고 이 질의들은 정답 청크가 없으므로 순위 지표를
+# 잴 수 없다 — 재는 것은 **답변이 규정대로 거절했는가**뿐이다.
+# 그래서 EVAL_SET_VERSION 은 2 그대로 두고 버전을 따로 매긴다.
+#
+# **왜 이 축이 필요한가.** 인용 정확도는 정답이 있는 질의에서만 재므로
+# "없는 것을 뒤지다 지어내는" 실패를 못 잡는다 — 정답이 없는 질의에서는 짚을 파일이
+# 없어 날조와 침묵이 똑같이 0점으로 보인다. 검색을 반복하는 경로(tool use)는 한 번
+# 검색하고 끝내는 경로보다 그 여지가 크므로, 그걸 재려면 이 목록이 있어야 한다.
+ABSENT_SET_VERSION = 1
+
+# kind: "absent" — 정답이 없다. answers 를 갖지 않는다(is_answer 를 부르면 안 된다).
+#
+# **질의를 지어내지 않았다.** 저장소 소스 전체를 검색해 관련 낱말이 **0회**인 것만
+# 골랐고, why_absent 에 그 근거를 남겼다 — 나중에 같은 검색으로 다시 확인할 수 있다.
+# 전부 그 도메인에 **있을 법한** 기능이다. 있을 법하지 않은 것을 물으면 거절이 너무
+# 쉬워져 축이 무의미해진다.
+AIR_ABSENT_QUERIES = [
+    {
+        "id": "air_ab_01", "kind": "absent",
+        "query": "출퇴근 기록은 어디서 처리해?",
+        "why_absent": "attend·근태·출퇴근 0회. 근태 관리 도메인 자체가 없다",
+    },
+    {
+        "id": "air_ab_02", "kind": "absent",
+        "query": "휴가 신청 기능이 있어?",
+        "why_absent": "vacation·휴가·leave 0회. 결재는 있지만 휴가 결재 종류가 없다",
+    },
+    {
+        "id": "air_ab_03", "kind": "absent",
+        "query": "구글이나 카카오 소셜 로그인은 어떻게 붙였어?",
+        "why_absent": "OAuth·소셜·카카오·google 0회. SecurityConfig 는 폼 로그인만 설정한다",
+    },
+    {
+        "id": "air_ab_04", "kind": "absent",
+        "query": "새 결재가 오면 알림을 보내는 코드가 있어?",
+        "why_absent": "notification·notify·알림 0회. 결재 상태 변경 후 통지 경로가 없다",
+    },
+    {
+        "id": "air_ab_05", "kind": "absent",
+        "query": "보고서에 댓글을 다는 기능이 있어?",
+        "why_absent": "comment·댓글·reply 0회. Report 엔티티에 댓글 연관이 없다",
+    },
+    {
+        "id": "air_ab_06", "kind": "absent",
+        "query": "화면을 영어로 바꾸는 다국어 처리가 있어?",
+        "why_absent": "i18n·locale·MessageSource·다국어 0회. 문구가 전부 한국어로 박혀 있다",
+    },
+]
+
+MARRYDAY_ABSENT_QUERIES = [
+    {
+        "id": "md_ab_01", "kind": "absent",
+        "query": "드레스 대여 결제는 어디서 처리해?",
+        "why_absent": "payment·결제·stripe·toss·iamport 0회. 결제 연동이 없다",
+    },
+    {
+        "id": "md_ab_02", "kind": "absent",
+        "query": "예약 날짜를 고르는 기능이 있어?",
+        "why_absent": (
+            "예약·booking 0회. reserv 26회는 전부 LLM 프롬프트의 'Preserve' 다 — "
+            "낱말이 걸린다고 기능이 있는 것이 아니다"
+        ),
+    },
+    {
+        "id": "md_ab_03", "kind": "absent",
+        "query": "카카오 로그인은 어떻게 붙였어?",
+        "why_absent": "kakao·카카오·oauth·소셜 0회. routers/auth.py 는 자체 세션 로그인만 한다",
+    },
+    {
+        "id": "md_ab_04", "kind": "absent",
+        "query": "장바구니에 드레스를 담는 기능이 있어?",
+        "why_absent": "cart·장바구니·wishlist·찜 0회. 드레스는 고르기만 하고 담지 않는다",
+    },
+    {
+        "id": "md_ab_05", "kind": "absent",
+        "query": "쿠폰이나 할인 코드를 적용하는 부분이 있어?",
+        "why_absent": "coupon·쿠폰·discount·할인·promo 0회. 금액을 다루는 코드가 없다",
+    },
+    {
+        "id": "md_ab_06", "kind": "absent",
+        "query": "합성 결과를 PDF 로 내려받는 기능이 있어?",
+        "why_absent": "pdf 0회. 결과는 이미지로만 다룬다",
+    },
+]
+
+APNS4J_ABSENT_QUERIES = [
+    {
+        "id": "ap_ab_01", "kind": "absent",
+        "query": "만료된 기기 토큰을 애플에서 회수하는 피드백 서비스가 있어?",
+        "why_absent": "feedback 0회. 전송 채널만 있고 피드백 서비스 연결이 없다",
+    },
+    {
+        "id": "ap_ab_02", "kind": "absent",
+        "query": "HTTP/2 로 푸시를 보내는 코드는 어디 있어?",
+        "why_absent": "http2·HTTP/2 0회. 2195 포트 레거시 바이너리 프로토콜만 구현한다",
+    },
+    {
+        "id": "ap_ab_03", "kind": "absent",
+        "query": "인증서 만료일을 검사하는 부분이 있어?",
+        "why_absent": "checkValidity·getNotAfter 0회. KeyStoreGetter 는 읽어 오기만 한다",
+    },
+    {
+        "id": "ap_ab_04", "kind": "absent",
+        "query": "전송 성공·실패 건수를 집계하는 통계 기능이 있어?",
+        "why_absent": "metric·statist 0회. stat 73회는 전부 static 키워드다",
+    },
+    {
+        "id": "ap_ab_05", "kind": "absent",
+        "query": "프록시 서버를 거쳐 접속하는 설정이 있어?",
+        "why_absent": "proxy 0회. SecuritySocketFactory 는 직결 소켓만 만든다",
+    },
+    {
+        "id": "ap_ab_06", "kind": "absent",
+        "query": "푸시 우선순위를 지정하는 옵션이 있어?",
+        "why_absent": "priority 0회. Payload 에 우선순위 필드가 없다",
+    },
+]
+
 # 평가 대상 묶음. 하네스가 이걸 순회한다.
 EVAL_SETS = {
     "air": {"repo": EVAL_REPO, "queries": EVAL_QUERIES},
     "marryday": {"repo": MARRYDAY_REPO, "queries": MARRYDAY_QUERIES},
     "apns4j": {"repo": APNS4J_REPO, "queries": APNS4J_QUERIES},
+}
+
+# 거절 질의는 세트 이름으로만 이어 둔다. EVAL_SETS 에 합치지 않는 이유는 위와 같다 —
+# 검색 품질 하네스(test_search_quality)가 이것까지 순회하면 안 된다.
+ABSENT_SETS = {
+    "air": AIR_ABSENT_QUERIES,
+    "marryday": MARRYDAY_ABSENT_QUERIES,
+    "apns4j": APNS4J_ABSENT_QUERIES,
 }
 
 

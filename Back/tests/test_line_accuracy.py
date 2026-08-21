@@ -158,7 +158,9 @@ def test_measure_line_number_accuracy(capsys):
                 continue
             files = json.loads(cache.read_text(encoding="utf-8"))
 
-            for path_name in ("rag", "full"):
+            # 어느 팔이 돌았는지는 기록마다 다르다 — 전체 주입 임계값을 넘는 저장소는
+            # RAG 한 팔만 돈다. 옛 기록에는 이 키가 없어 두 팔로 폴백한다.
+            for path_name in rec.get("arms", ("rag", "full")):
                 counts = Counter()
                 for row in rec[path_name]["rows"]:
                     for cite in _citations(row.get("answer", "")):

@@ -119,10 +119,15 @@ AST 에서 자동 산출한다(sha256 앞 8자). 청킹을 고치면 자동으�
 | `SONNET_5_LIST_PRICE` | `(3.0, 15.0)` | `app.services.claude_client` | — |
 | `CACHE_WRITE_MULTIPLIER` | `1.25` | `app.services.claude_client` | — |
 | `CACHE_READ_MULTIPLIER` | `0.1` | `app.services.claude_client` | — |
+| `REFUSAL_PHRASES` | `2개` | `app.services.claude_client` | — |
 | `CHARS_PER_TOKEN` | `2.0` | `app.services.context_builder` | — |
 
 sonnet-5 도입가는 `SONNET_5_INTRO_LAST_DAY`(2026-08-31)까지다. **날짜로 자동 전환되므로
 사람이 고칠 것이 없다** — `pricing_for(model, at)` 가 그날을 넘기면 정가를 돌려준다.
+
+`REFUSAL_PHRASES` 는 `CHAT_SYSTEM_PROMPT` 가 강제하는 거절 문구다. **프롬프트에 f-string
+으로 끼워 넣지 않는다** — 끼워 넣으면 정합성 테스트가 동어반복이 되어 문구가 갈라져도
+통과한다. 리터럴로 두고 `test_claude_client.py` 가 포함 여부를 검사한다.
 
 ### 1.6 정적분석
 
@@ -162,6 +167,28 @@ sonnet-5 도입가는 `SONNET_5_INTRO_LAST_DAY`(2026-08-31)까지다. **날짜�
 | `MAX_DAYS` | `365` | `app.services.usage_stats` | — |
 | `TOKEN_FIELDS` | `4개` | `app.services.usage_stats` | — |
 | `KEY_SOURCE` | `'pushed_at'` | `app.services.summary_cache` | — |
+
+### 1.9 평가 하네스
+
+**여기만 `tests.` 모듈이다.** 측정 조건은 코드가 아니라 자(尺)라서 `app/` 에 두지 않지만,
+값이 흔들리면 측정끼리 비교가 끊기므로 상수로 박고 여기서 대조한다.
+두 모듈 다 import 부작용이 없다(임베딩은 지연 로드, DB 풀도 지연 생성) — 대조는 무과금이다.
+
+| 항목 | 기본값 | 출처 | env 키 |
+|---|---|---|---|
+| `EVAL_SET_VERSION` | `2` | `tests.search_eval_dataset` | — |
+| `EVAL_SETS` | `3개` | `tests.search_eval_dataset` | — |
+| `ABSENT_SET_VERSION` | `1` | `tests.search_eval_dataset` | — |
+| `ABSENT_SETS` | `3개` | `tests.search_eval_dataset` | — |
+| `COST_RATIO_LIMIT` | `3.0` | `tests.test_citation_quality` | — |
+
+`ABSENT_SETS` 는 저장소에 **없는** 기능을 묻는 질의다(세트당 6개). `EVAL_SETS` 에 섞지
+않는다 — 섞으면 Recall@8 의 분모가 바뀌어 `search_evals.jsonl` 의 기존 기록과 비교가
+끊기고, 인용 정확도도 조용히 희석된다. 그래서 버전을 따로 매긴다.
+
+`COST_RATIO_LIMIT` 은 tool use 판정 기준 C 의 임계값이다 — 품질이 올라도 질문당 비용이
+기준선의 이 배수를 넘으면 전면 도입하지 않는다. 근거는 `tests/test_citation_quality.py`
+docstring 에 측정 전에 고정해 두었다.
 
 ---
 
