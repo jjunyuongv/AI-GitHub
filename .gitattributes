@@ -1,0 +1,18 @@
+# 개행은 **통일하지 않고 현재 상태를 고정한다.**
+#
+# 일괄 정규화하면 문서 분할(cb2109a)에서 sha256 으로 지킨 무손실이 그 커밋에서 깨진다.
+# 한 줄 고친 커밋이 파일 전체 변경으로 보이면 리뷰가 불가능해지므로, 뒤집히기 전에 못박는다.
+#
+# 저장소의 blob 은 예외 없이 LF 다(`git ls-files --eol` 실측). 아래는 워킹트리 개행만 정한다.
+# 새 문서를 만들 때는 그 파일의 실제 개행을 확인하고 여기에 한 줄 추가할 것.
+
+# 워킹트리가 CRLF 인 문서
+plan.md         text eol=crlf
+CLAUDE.md       text eol=crlf
+docs/log/*.md   text eol=crlf
+
+# 워킹트리가 LF 인 문서 (이 파일 자신도 LF 다)
+.gitattributes  text eol=lf
+TROUBLESHOOTING.md  text eol=lf
+트러블슈팅.md  text eol=lf
+플로우.md  text eol=lf
