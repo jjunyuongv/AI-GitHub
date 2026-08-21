@@ -180,6 +180,7 @@ RepoDive 를 만들며 **실제로 겪은** 문제와 해결을 한곳에 모은
 | **`.env` 를 고쳤더니 API 키를 못 읽음** | PowerShell `Out-File -Encoding UTF8` 이 **BOM 을 붙인다** | BOM 없이 쓴다(`UTF8Encoding $false`). 첫 4바이트를 확인할 것 |
 | **소스 파일 한글이 통째로 깨지고 줄이 뭉개짐** | 상수 하나 바꾸려고 `Get-Content -Raw \| ... \| Set-Content` 로 왕복시켰다. 읽기는 ANSI(cp949)로 해석하고 쓰기는 UTF-8이라 **글자와 줄 구조가 함께 깨진다** | 한글이 든 파일은 PowerShell 로 치환하지 말 것. 편집 도구로 고친다 |
 | 과금 측정이 조용히 skip | 마커가 둘(`evaluation`+`billed`)인데 `-m billed` 만 지정 | `-m "evaluation and billed"`. skip 사유는 `-rs` 로 본다 |
+| **문서를 한 줄 고쳤는데 diff 가 파일 전체로 뜬다** | 개행 정규화. `autocrlf=true` 인데 워킹트리 개행이 **파일마다 다르다** — `plan.md`·`CLAUDE.md` 는 CRLF, `TROUBLESHOOTING.md`·`트러블슈팅.md`·`플로우.md` 는 LF | 고치기 전에 **그 파일의** 개행을 확인한다. 도구를 Python 으로 바꿔도 안 풀린다 — `.gitattributes` 로 현상 고정. 상세는 [06-stage5.md](docs/log/06-stage5.md) 의 분할 절 |
 
 ---
 
