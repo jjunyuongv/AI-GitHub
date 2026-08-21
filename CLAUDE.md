@@ -135,6 +135,9 @@ blob(LF)과 워킹트리(CRLF)의 바이트가 다르다(실측 204,027 vs 206,7
 그것과 바이트로 비교할 것. **개행 방식은 파일마다 다르므로 파일별로 확인한다** —
 이 저장소는 `plan.md`·`CLAUDE.md` 가 CRLF, `TROUBLESHOOTING.md`·`트러블슈팅.md` 가 LF다.
 
+**개행 방식의 정본은 `.gitattributes` 다. 위는 예시이며 전수 목록이 아니다.
+실제 상태는 `git ls-files --eol` 로 확인한다.**
+
 ## 6. Project Structure Rules
 
 현재 백엔드 구조 (이 형태를 유지할 것):
