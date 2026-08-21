@@ -1,8 +1,12 @@
 """답변 품질 — 인용 정확도와 거절 정확도를 **같은 자로** 잰다.
 
-**과금된다.** 질의마다 Claude 를 실제로 부른다. `-m billed` 를 명시했을 때만 돈다:
+**과금된다.** 질의마다 Claude 를 실제로 부른다. 두 마커를 **다** 명시했을 때만 돈다:
 
-    pytest -m billed tests/test_citation_quality.py -s
+    pytest -m "billed and evaluation" tests/test_citation_quality.py -s
+
+`-m billed` 만 쓰면 **조용히 3건 skip 된다.** conftest 의 opt-in 게이트는 마커마다
+따로 물어서, 이 모듈이 단 `evaluation` 마커가 `-m` 에 없으면 그것만으로 건너뛴다.
+0.9초에 `sss` 로 끝나면 측정이 아니라 아무것도 안 돈 것이다 — 로그 파일도 안 생긴다.
 
 ## 왜 순위 지표를 안 쓰는가
 
