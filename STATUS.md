@@ -121,6 +121,10 @@ AST 에서 자동 산출한다(sha256 앞 8자). 청킹을 고치면 자동으�
 | `SEARCH_ONLY_SCHEMAS` | `1개` | `app.services.tools` | — |
 | `MAX_TOOL_RESULT_TOKENS` | `800` | `app.services.tools` | — |
 | `MAX_GREP_MATCHES` | `30` | `app.services.tools` | — |
+| `CITATION_CONTEXT_LINES` | `20` | `app.api.chat` | — |
+| `MAX_FILE_VIEW_LINES` | `400` | `app.api.chat` | — |
+| `MAX_RANGE_LINES` | `200` | `app.services.citations` | — |
+| `MIN_SNIPPET_CHARS` | `6` | `app.services.citations` | — |
 | `PRICING` | `1개` | `app.services.claude_client` | — |
 | `SONNET_5_INTRO_PRICE` | `(2.0, 10.0)` | `app.services.claude_client` | — |
 | `SONNET_5_LIST_PRICE` | `(3.0, 15.0)` | `app.services.claude_client` | — |
@@ -289,6 +293,19 @@ LLM 을 다시 부를 필요가 없다.
 
 ### 2.4 대화가 답하는 방식
 
+- **인용 파서는 하나뿐이다** — `Back/app/services/citations.py`. `/chat` 이 화면 링크를
+  만들 때와 `tests/test_line_accuracy.py` 가 행 번호 정확도를 채점할 때 **같은 함수**를
+  쓴다. 파서가 둘이 되면 "채점하는 인용"과 "링크로 뜨는 인용"이 다른 집합이 되고 한쪽만
+  고치면 조용히 어긋난다. **규칙을 고치면 `-m evaluation tests/test_line_accuracy.py` 의
+  수치가 움직인다** — 그게 회귀 감시선이다.
+- **서버는 인용이 맞았는지 판정하지 않는다.** 행 번호 실측 정확도가 **72.4%**(118/163)인데
+  그대로 넘긴다. 화면은 코드를 보여줄 뿐이고 맞았는지는 사람이 본다 —
+  **틀린 것을 감추면 고칠 수가 없다.** 그래서 `GET /chat/{id}/file` 은 인용 범위 앞뒤로
+  `CITATION_CONTEXT_LINES` 만큼 여유를 붙이고, 파일 밖을 가리켜도 **고쳐 주지 않는다**
+  (요청 범위를 그대로 되돌려 준다).
+- **인용은 보관 소스가 있어야 만들어진다.** 경로 해석이 `sources.list_paths` 에 기대므로
+  보관이 없으면 목록이 비고 화면은 링크를 안 만든다 — **죽은 링크가 구조적으로 생기지
+  않는다.** 특례 처리가 아니라 설계의 결과다.
 - **tool use 는 큰 저장소에서만 켜진다.** 전체 주입 임계값을 넘는 스냅샷은 도구로 답하고,
   임계값 이하는 소스 전체를 접두사에 넣은 채 도구 없이 답한다. **측정으로 정한 것이다** —
   임계값을 넘는 세트에서 인용 정확도가 0.7647 → 1.0 (+0.235, 한 건이 0.0588 이므로 4건분)

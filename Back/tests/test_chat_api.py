@@ -166,7 +166,12 @@ def test_answer_is_returned_and_saved(client, fake_chats, captured_call):
     res = _ask(client)
 
     assert res.status_code == 200
-    assert res.json() == {"session_id": SESSION_ID, "answer": "가짜 답변"}
+    assert res.json() == {
+        "session_id": SESSION_ID,
+        "answer": "가짜 답변",
+        # DB 가 꺼져 있어 보관 경로를 못 읽는다 → 인용 없음. 답변은 그대로 나간다.
+        "citations": [],
+    }
     assert [(m["role"], m["content"]) for m in fake_chats.messages] == [
         ("user", "인증은 어디서 처리해?"),
         ("assistant", "가짜 답변"),

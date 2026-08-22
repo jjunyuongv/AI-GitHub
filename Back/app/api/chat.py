@@ -7,9 +7,17 @@ import anthropic
 from fastapi import APIRouter, HTTPException, Request
 
 from app.db import chats, index_status
+from app.db import sources as source_store
 from app.db.pool import DB_ERRORS
-from app.schemas.schemas import ChatHistory, ChatRequest, ChatResponse, IndexStatus
-from app.services import indexer, rate_limit, run_log, tools
+from app.schemas.schemas import (
+    ChatHistory,
+    ChatRequest,
+    ChatResponse,
+    FileView,
+    IndexStatus,
+)
+from app.services import citations, indexer, rate_limit, run_log, tools
+from app.services.context_builder import number_lines
 from app.services.claude_client import (
     CHAT_SYSTEM_PROMPT,
     DEFAULT_EFFORT,
@@ -27,6 +35,34 @@ logger = logging.getLogger(__name__)
 
 DB_UNAVAILABLE = "대화 기능을 쓸 수 없습니다 (데이터베이스 연결 실패). 잠시 후 다시 시도해 주세요."
 SESSION_NOT_FOUND = "대화를 찾을 수 없습니다. 저장소를 다시 분석해 주세요."
+
+# 인용이 가리킨 범위 앞뒤로 함께 보여줄 줄 수.
+#
+# **행 번호가 27.6% 확률로 틀린다**(실측 118/163). 딱 그 범위만 보여주면 틀렸을 때
+# 막다른 길이 된다 — 사용자가 "여기 없는데?" 에서 멈춘다. 실제로 관측된 어긋남이
+# +3 ~ +22 행이었으므로(`context_builder.number_lines` 주석), 그만큼 어긋나도 같은
+# 화면에 들어오게 20 을 잡는다.
+CITATION_CONTEXT_LINES = 20
+
+# 한 번에 돌려줄 줄 수 상한. `tools.MAX_TOOL_RESULT_TOKENS` 와 같은 성격이지만
+# 여기는 사람이 읽으므로 토큰이 아니라 줄로 자른다.
+MAX_FILE_VIEW_LINES = 400
+
+
+def _stored_paths(snapshot_id: int) -> list[str]:
+    """인용 경로를 해석할 목록. 읽지 못하면 빈 목록.
+
+    **실패를 삼킨다.** 인용은 답변에 링크를 더하는 부가 기능이라, 이것 때문에 답변이나
+    이력이 막히면 안 된다 — 링크가 없는 화면이 503 보다 낫다.
+
+    경로 해석이 이 목록에 기대므로 **보관 소스가 없으면 저절로 빈 목록이 된다.**
+    죽은 링크를 만들어 놓고 404 를 띄우는 경우가 구조적으로 생기지 않는다.
+    """
+    try:
+        return source_store.list_paths(snapshot_id)
+    except DB_ERRORS as e:
+        logger.warning("보관 경로를 읽지 못해 인용을 만들지 않습니다 (%s): %s", snapshot_id, e)
+        return []
 
 
 def _load_session(session_id: str) -> dict:
@@ -137,7 +173,57 @@ def chat(req: ChatRequest, request: Request):
     )
     rate_limit.record_tokens(billable_tokens(result))
 
-    return ChatResponse(session_id=req.session_id, answer=result["text"])
+    return ChatResponse(
+        session_id=req.session_id,
+        answer=result["text"],
+        citations=citations.for_answer(
+            result["text"], _stored_paths(session["snapshot_id"])
+        ),
+    )
+
+
+@router.get("/chat/{session_id}/file", response_model=FileView)
+def file_view(session_id: str, path: str, start: int, end: int):
+    """인용이 가리킨 파일 조각. 앞뒤 여유를 붙여 돌려준다.
+
+    **세션의 스냅샷에 묶인다.** `path` 는 그 스냅샷에 보관된 것만 읽는다 — 임의 경로를
+    받지 않는다. DB 키 조회라 파일시스템에 애초에 닿지 않으므로 `..` 같은 경로 조작이
+    성립하지 않는다.
+
+    도구의 `read_file` 과 **같은 형식**(`12|코드`)으로 준다. 형식이 갈리면 화면과 모델이
+    다른 것을 보게 된다. GitHub·LLM 호출이 없어 남용 제한도 걸지 않는다.
+    """
+    session = _load_session(session_id)
+    try:
+        content = source_store.get_file(session["snapshot_id"], path)
+    except DB_ERRORS:
+        raise HTTPException(status_code=503, detail=DB_UNAVAILABLE)
+    if content is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"'{path}' 는 이 대화가 보는 스냅샷에 보관돼 있지 않습니다.",
+        )
+
+    lines = content.splitlines()
+    # **요청 범위를 그대로 되돌려 준다.** 파일 밖을 가리켜도 고쳐 주지 않는다 —
+    # 화면이 "인용이 여기라고 했다"를 보여줘야 틀린 것이 눈에 띈다.
+    first = max(1, start - CITATION_CONTEXT_LINES)
+    last = min(len(lines), end + CITATION_CONTEXT_LINES)
+    truncated = last - first + 1 > MAX_FILE_VIEW_LINES
+    if truncated:
+        last = first + MAX_FILE_VIEW_LINES - 1
+
+    chunk = "\n".join(lines[first - 1 : last]) if first <= len(lines) else ""
+    return FileView(
+        path=path,
+        start_line=first,
+        end_line=last,
+        requested_start=start,
+        requested_end=end,
+        total_lines=len(lines),
+        truncated=truncated,
+        numbered=number_lines(chunk, first) if chunk else "",
+    )
 
 
 @router.get("/chat/{session_id}/index", response_model=IndexStatus)
@@ -191,9 +277,23 @@ def history(session_id: str):
     except DB_ERRORS:
         raise HTTPException(status_code=503, detail=DB_UNAVAILABLE)
 
+    # **이력에도 인용을 붙인다.** 안 붙이면 새로고침했을 때 링크가 사라진다.
+    # 추출은 순수 정규식이라 무과금이고, 보관 경로는 한 번만 읽는다.
+    paths = _stored_paths(session["snapshot_id"])
+
     return ChatHistory(
         session_id=session_id,
         repo={"owner": session["display_owner"], "name": session["display_name"]},
         summary=session["summary"],
-        messages=messages,
+        messages=[
+            {
+                **m,
+                "citations": (
+                    citations.for_answer(m["content"], paths)
+                    if m["role"] == "assistant"
+                    else []
+                ),
+            }
+            for m in messages
+        ],
     )

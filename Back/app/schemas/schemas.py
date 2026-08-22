@@ -31,15 +31,37 @@ class ChatRequest(BaseModel):
     message: str
 
 
+class Citation(BaseModel):
+    """답변이 짚은 근거 한 건. 화면이 이걸로 링크를 건다.
+
+    **행 번호는 검증되지 않은 값이다** — 실측 정확도가 72.4% 다. 서버는 맞았는지
+    판정하지 않고 그대로 넘긴다. 틀린 것을 감추면 고칠 수가 없다.
+
+    `offset` 은 답변 문자열 안에서 `marker` 가 시작하는 위치다. 화면은 offset 으로
+    렌더 트리의 노드를 고르고 `marker` 로 그 안의 위치를 정한다 — 마크다운 렌더러가
+    줄 앞뒤 공백을 지워서 offset 산술만으로는 어긋난다.
+    """
+
+    path: str
+    start_line: int
+    end_line: int
+    marker: str
+    offset: int
+
+
 class ChatResponse(BaseModel):
     session_id: str
     answer: str
+    # 보관 소스가 없는 스냅샷에서는 빈 목록이다 (경로가 해석되지 않는다).
+    citations: list[Citation] = []
 
 
 class ChatMessage(BaseModel):
     role: str
     content: str
     created_at: datetime
+    # 사용자 메시지에는 없다. 이력을 복원했을 때도 링크가 살아 있어야 해서 여기 싣는다.
+    citations: list[Citation] = []
 
 
 class ChatRepo(BaseModel):
@@ -72,6 +94,26 @@ class IndexStatus(BaseModel):
     # 남은 예상 시간(초). 진행이 없어 계산할 수 없으면 None.
     eta_seconds: int | None = None
     error: str | None = None
+
+
+class FileView(BaseModel):
+    """인용이 가리킨 파일의 한 조각.
+
+    **요청 범위와 실제 반환 범위를 둘 다 준다.** 화면이 "인용이 가리킨 줄"을
+    하이라이트하고 앞뒤 여유와 구분하려면 둘이 다 필요하다.
+    """
+
+    path: str
+    # 실제로 담긴 범위 (앞뒤 여유가 붙어 있다)
+    start_line: int
+    end_line: int
+    # 인용이 요청한 범위. 파일 밖을 가리켰으면 그대로 돌려준다 — 틀린 것을 감추지 않는다.
+    requested_start: int
+    requested_end: int
+    total_lines: int
+    truncated: bool
+    # `12|코드` 형식. 도구의 read_file 과 같은 형식이다.
+    numbered: str
 
 
 class RunRequest(BaseModel):

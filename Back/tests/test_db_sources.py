@@ -1,4 +1,6 @@
-"""snapshot_source_files 통합 테스트. 실제 PostgreSQL 이 필요하다 (없으면 skip).
+"""snapshot_source_files 통합 테스트 + 인용 파일 조회 API.
+
+실제 PostgreSQL 이 필요하다 (없으면 skip).
 
 **여기서 지키는 것은 하나다: 넣은 것과 꺼낸 것이 글자 하나 다르지 않을 것.**
 이 표의 존재 이유가 "청크로는 원본을 복원할 수 없다"이므로, 보관한 원문마저
@@ -7,6 +9,7 @@
 
 import pytest
 
+from app.api import chat as chat_api
 from app.db import repos as repo_db
 from app.db import sources as source_store
 from app.db.pool import cursor
@@ -200,6 +203,133 @@ def test_deleting_the_snapshot_takes_the_sources(snapshot_id):
         cur.execute("DELETE FROM repo_snapshots WHERE id = %s", (snapshot_id,))
 
     assert _count_all() == 0
+
+
+# --- 인용 파일 조회 API -------------------------------------------------------
+#
+# 대역이 아니라 실제 DB 로 돈다 — 이 엔드포인트의 안전성이 "보관된 것만 읽는다"에
+# 기대고 있어서, 조회 경로를 대역으로 바꾸면 그 보장을 재지 않게 된다.
+
+LONG = "".join(f"line {i}\n" for i in range(1, 601))
+
+
+@pytest.fixture
+def api(snapshot_id):
+    from fastapi.testclient import TestClient
+
+    from app.db import chats
+    from app.main import app
+
+    source_store.put_files(snapshot_id, {"big.py": LONG, "small.py": "a\nb\nc\n"})
+    return TestClient(app), chats.create_session(snapshot_id)
+
+
+def test_file_view_pads_context_around_the_citation(api):
+    """**딱 그 범위만 주면 행 번호가 틀렸을 때 막다른 길이 된다.**
+
+    실측 정확도가 72.4% 라 4건 중 하나는 어긋난다. 앞뒤 여유가 그 어긋남을 덮는다.
+    """
+    client, sid = api
+
+    body = client.get(f"/chat/{sid}/file", params={"path": "big.py", "start": 100, "end": 110}).json()
+
+    assert body["start_line"] == 100 - chat_api.CITATION_CONTEXT_LINES
+    assert body["end_line"] == 110 + chat_api.CITATION_CONTEXT_LINES
+    # 요청 범위는 그대로 돌려준다 — 화면이 인용 자리를 하이라이트해야 한다
+    assert (body["requested_start"], body["requested_end"]) == (100, 110)
+    assert body["numbered"].startswith("80|line 80")
+    assert "130|line 130" in body["numbered"]
+
+
+def test_file_view_does_not_run_off_the_start(api):
+    client, sid = api
+
+    body = client.get(f"/chat/{sid}/file", params={"path": "big.py", "start": 3, "end": 5}).json()
+
+    assert body["start_line"] == 1
+    assert body["numbered"].startswith("1|line 1")
+
+
+def test_file_view_truncates_and_says_so(api):
+    """**긴 범위를 통째로 내려보내지 않는다.** 잘랐다는 것을 화면이 알아야 한다."""
+    client, sid = api
+
+    body = client.get(f"/chat/{sid}/file", params={"path": "big.py", "start": 1, "end": 600}).json()
+
+    assert body["truncated"] is True
+    assert body["end_line"] - body["start_line"] + 1 == chat_api.MAX_FILE_VIEW_LINES
+
+
+def test_a_short_range_is_not_truncated(api):
+    client, sid = api
+
+    body = client.get(f"/chat/{sid}/file", params={"path": "big.py", "start": 100, "end": 110}).json()
+
+    assert body["truncated"] is False
+
+
+def test_a_citation_past_the_end_is_not_corrected(api):
+    """**파일 밖을 가리켜도 고쳐 주지 않는다.** 틀린 것이 눈에 띄어야 개선할 수 있다."""
+    client, sid = api
+
+    body = client.get(f"/chat/{sid}/file", params={"path": "small.py", "start": 900, "end": 910}).json()
+
+    assert (body["requested_start"], body["requested_end"]) == (900, 910)
+    assert body["total_lines"] == 3
+    assert body["numbered"] == ""
+
+
+def test_file_view_is_bound_to_the_snapshot(api, snapshot_id):
+    """다른 스냅샷에 보관된 경로는 이 세션으로 못 읽는다."""
+    client, sid = api
+    other = _other_snapshot()
+    source_store.put_files(other, {"secret.py": "비밀\n"})
+
+    res = client.get(f"/chat/{sid}/file", params={"path": "secret.py", "start": 1, "end": 1})
+
+    assert res.status_code == 404
+
+
+def test_an_unstored_path_is_404_not_a_traversal(api):
+    client, sid = api
+
+    for path in ("nope.py", "../../etc/passwd", "/etc/passwd"):
+        res = client.get(f"/chat/{sid}/file", params={"path": path, "start": 1, "end": 1})
+        assert res.status_code == 404, path
+
+
+def test_citations_ride_the_history(api, snapshot_id):
+    """새로고침해도 링크가 살아 있어야 한다."""
+    from app.db import chats
+
+    client, sid = api
+    chats.add_exchange(
+        sid, "질문",
+        "- `big.py`(100-110행)에서 `doThing(x) {}` 를 부릅니다.",
+    )
+
+    body = client.get(f"/chat/{sid}").json()
+
+    assistant = [m for m in body["messages"] if m["role"] == "assistant"][0]
+    assert len(assistant["citations"]) == 1
+    assert assistant["citations"][0]["path"] == "big.py"
+    assert assistant["citations"][0]["marker"] == "100-110행"
+
+
+def test_a_snapshot_without_sources_gets_no_citations(snapshot_id):
+    """**죽은 링크가 구조적으로 안 생긴다** — 보관이 없으면 경로가 해석되지 않는다."""
+    from fastapi.testclient import TestClient
+
+    from app.db import chats
+    from app.main import app
+
+    client = TestClient(app)
+    sid = chats.create_session(snapshot_id)      # put_files 를 부르지 않는다
+    chats.add_exchange(sid, "질문", "- `big.py`(1-5행)에서 `doThing(x) {}` 를 부릅니다.")
+
+    body = client.get(f"/chat/{sid}").json()
+
+    assert [m for m in body["messages"] if m["role"] == "assistant"][0]["citations"] == []
 
 
 def test_cleanup_of_an_orphan_snapshot_takes_the_sources(snapshot_id):

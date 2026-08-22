@@ -28,11 +28,13 @@
 """
 
 import json
-import re
 from collections import Counter
 from pathlib import Path
 
 import pytest
+
+from app.services.citations import extract as _citations
+from app.services.citations import resolve_path
 
 pytestmark = pytest.mark.evaluation
 
@@ -40,74 +42,15 @@ BACK_DIR = Path(__file__).resolve().parents[1]
 CITATION_LOG = BACK_DIR / "logs" / "citation_evals.jsonl"
 SOURCE_CACHE_DIR = BACK_DIR / "cache" / "eval_sources"
 
-# "41~100행", "102-124행", "35행". 물결·붙임표·en dash 를 모두 받는다.
-RANGE_RE = re.compile(r"(\d{1,5})\s*[~\-–]\s*(\d{1,5})\s*행")
-SINGLE_RE = re.compile(r"(?<![\d~\-–])(\d{1,5})\s*행")
-# 백틱 안의 내용. 파일명인지 코드인지는 뒤에서 가른다.
-TICK_RE = re.compile(r"`([^`]+)`")
-
-# 이보다 짧은 조각은 어디에나 있어 변별력이 없다(`size` 같은 것).
-MIN_SNIPPET_CHARS = 6
-
-# **코드를 그대로 인용한 것만 판정한다.** 공백이나 구두점이 있어야 한다.
-#
-# 왜: `ApnsChannel`·`String`·`IOException` 처럼 이름 하나만 적은 것은 "그 줄에 이 문자열이
-# 있다"는 주장이 아니라 "이 범위가 이런 일을 한다"는 서술이다. 그걸 문자열 위치로 채점하면
-# 모델이 아니라 **파서의 오탐**을 재게 된다 (처음 만들었을 때 실제로 그랬다 —
-# '틀림' 25건 중 대부분이 이름 언급이었다).
-# `this.size = (executorSize > processors)` 나 `public class A implements B` 처럼
-# 여러 토큰으로 된 것만 남기면 그 조각이 그 줄에 있다는 주장이 분명해진다.
-CODE_LIKE = re.compile(r"[ ;={}]|\(\s*\w")
-# 행 번호를 말하면서 범위를 크게 잡는 답변이 있다. 너무 넓으면 "맞다"가 무의미해진다.
-MAX_RANGE_LINES = 200
-
-
-def _looks_like_path(text: str) -> bool:
-    return "/" in text or bool(re.search(r"\.\w{1,4}$", text))
+# **추출 규칙은 `app/services/citations.py` 에 있다.** 여기 두면 파서가 둘이 된다 —
+# 화면이 링크로 뜨는 인용과 이 하네스가 채점하는 인용이 다른 집합이 되고, 한쪽만
+# 고치면 조용히 어긋난다. 여기 남는 것은 **판정**(`_verdict`)뿐이다.
 
 
 def _source_for(answer_path: str, files: dict[str, str]) -> str | None:
-    """답변이 말한 경로에 해당하는 소스. 접미사로 맞춘다(답변은 경로를 줄여 쓴다)."""
-    name = answer_path.strip().lstrip("./")
-    matches = [content for path, content in files.items() if path.endswith(name)]
-    return matches[0] if len(matches) == 1 else None
-
-
-def _citations(answer: str) -> list[dict]:
-    """답변에서 (파일, 행범위, 코드조각들)을 뽑는다.
-
-    파일명은 그 줄에 없으면 **직전에 언급된 것**을 쓴다 — 답변이 파일을 제목으로 한 번
-    쓰고 그 아래 불릿에 행 번호만 적는 형식이 흔하다.
-    """
-    out = []
-    current_file = None
-    for line in answer.splitlines():
-        ticks = TICK_RE.findall(line)
-        paths = [t for t in ticks if _looks_like_path(t)]
-        if paths:
-            current_file = paths[-1]
-        if not current_file:
-            continue
-
-        spans = [(int(a), int(b)) for a, b in RANGE_RE.findall(line)]
-        if not spans:
-            spans = [(int(n), int(n)) for n in SINGLE_RE.findall(line)]
-        if not spans:
-            continue
-
-        snippets = [
-            t for t in ticks
-            if not _looks_like_path(t)
-            and len(t.strip()) >= MIN_SNIPPET_CHARS
-            and CODE_LIKE.search(t)
-        ]
-        if not snippets:
-            continue
-        for start, end in spans:
-            if start <= end and (end - start) <= MAX_RANGE_LINES:
-                out.append({"file": current_file, "start": start, "end": end,
-                            "snippets": snippets})
-    return out
+    """답변이 말한 경로에 해당하는 소스. 경로 해석은 공유 모듈이 한다."""
+    path = resolve_path(answer_path, list(files))
+    return files[path] if path else None
 
 
 def _verdict(cite: dict, files: dict[str, str]) -> tuple[str, str | None]:
