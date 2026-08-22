@@ -384,3 +384,27 @@ UPDATE code_chunks_1024 c
 -- source_tokens 는 판정에 쓴 실측값이라 임계값을 바꿨을 때 무엇이 걸리는지 볼 수 있다.
 ALTER TABLE repo_snapshots ADD COLUMN IF NOT EXISTS source_bundle TEXT;
 ALTER TABLE repo_snapshots ADD COLUMN IF NOT EXISTS source_tokens INT;
+
+-- ── 스냅샷 소스 원문 ────────────────────────────────────────────────────────
+-- 수집한 소스 파일의 **원문**. 위 source_bundle 과 별개다 —
+-- 그쪽은 프롬프트에 넣으려고 `12|코드` 로 렌더한 결과물 한 덩어리이고,
+-- 여기는 파일 단위 원본이다. 합치면 둘 중 하나는 반드시 거짓이 된다.
+--
+-- **왜 필요한가**: 지금 원문이 남는 곳은 source_bundle 뿐인데 그것은 전체 주입
+-- 임계값 이하일 때만 채워진다. 즉 소스가 이미 프롬프트에 통째로 들어가 있는
+-- 저장소에만 원문이 있고, 정작 큰 저장소에는 없다. 청크로는 복원할 수 없다 —
+-- 청킹이 import 노드를 건너뛰고, 정의 사이의 틈을 버리고, 40자 미만 조각을
+-- 지우기 때문에 실측에서 비어있지 않은 줄의 8.5~12.7% 가 사라졌다.
+--
+-- 전체 주입 여부와 **무관하게** 채운다. 크기 상한은 config.MAX_STORED_SOURCE_BYTES
+-- 이고, 넘으면 한 행도 넣지 않는다(자르지 않는다 — 부분 보관은 "없다"는 답을
+-- 거짓말로 만든다).
+--
+-- PK 가 (snapshot_id, path) 라 파일 하나를 한 행으로 읽는다. 그 선두 열이 곧
+-- snapshot_id 인덱스이므로 따로 만들지 않는다.
+CREATE TABLE IF NOT EXISTS snapshot_source_files (
+  snapshot_id BIGINT NOT NULL REFERENCES repo_snapshots(id) ON DELETE CASCADE,
+  path        TEXT NOT NULL,
+  content     TEXT NOT NULL,
+  PRIMARY KEY (snapshot_id, path)
+);

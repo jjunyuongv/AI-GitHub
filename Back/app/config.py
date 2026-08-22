@@ -68,6 +68,20 @@ MAX_ARCHIVE_BYTES = int(os.environ.get("MAX_ARCHIVE_BYTES", str(500 * 1024 * 102
 MAX_SOURCE_FILE_BYTES = int(os.environ.get("MAX_SOURCE_FILE_BYTES", str(200 * 1024)))
 MAX_SOURCE_FILES = int(os.environ.get("MAX_SOURCE_FILES", "3000"))
 
+# 스냅샷에 보관할 소스 원문의 크기 상한. 0이면 제한 없음.
+#
+# 위 두 상한이 파일 3,000개 × 200KB 라 **이론상 600MB** 다. 실측은 저장소당
+# 76KB / 131KB / 2.5MB 라 여기 걸리는 저장소는 드물지만, 상한이 없으면 언젠가 터진다.
+# (크기와 근거는 indexer.MAX_HANDOFF_CHARS 와 같다 — 둘 다 "받아 둔 소스 전체를
+#  한 번에 들고 있어도 되는가"를 재는 값이다)
+#
+# **넘으면 한 행도 넣지 않는다. 자르지 않는다.** 일부만 보관하면 도구가 "없습니다"라고
+# 답할 때 그것이 "저장소에 없다"인지 "잘려서 없다"인지 구분할 수 없어진다.
+# 조용히 반쪽짜리 근거를 주느니 그 스냅샷에서는 보관을 포기하는 쪽이 맞다.
+MAX_STORED_SOURCE_BYTES = int(
+    os.environ.get("MAX_STORED_SOURCE_BYTES", str(20 * 1024 * 1024))
+)
+
 # 작은 저장소 RAG 우회. 소스 본문이 이 토큰 수 이하면 검색 없이 통째로 프롬프트에 넣는다.
 # 0이면 우회를 끄고 항상 RAG 를 쓴다.
 #

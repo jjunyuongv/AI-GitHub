@@ -12,13 +12,18 @@ import logging
 import threading
 import time
 
-from app.config import FULL_INJECTION_MAX_SOURCE_BYTES, FULL_INJECTION_MAX_TOKENS
+from app.config import (
+    FULL_INJECTION_MAX_SOURCE_BYTES,
+    FULL_INJECTION_MAX_TOKENS,
+    MAX_STORED_SOURCE_BYTES,
+)
 from app.core.chunk_rule import rule_version
 from app.core.chunker import chunk_files
 from app.core.embeddings import count_tokens, embed_documents, embed_query, input_limit
 from app.db import chunks as chunk_store
 from app.db import index_status
 from app.db import repos as repo_store
+from app.db import sources as source_store
 from app.db.pool import DB_ERRORS
 from app.services.claude_client import count_input_tokens
 from app.services.context_builder import build_source_bundle, estimate_tokens
@@ -127,6 +132,10 @@ def run_build(
                 files = fetch_source_files(owner, repo, ref)
             fetch_ms = int((time.perf_counter() - started) * 1000)
 
+            # 전체 주입 판정보다 **앞**이다. 뒤에 두면 작은 저장소가 여기서 빠져나가
+            # "소스가 이미 프롬프트에 다 들어간 저장소에만 원문이 남는" 상태가 그대로 남는다.
+            _store_sources(snapshot_id, files)
+
             if _try_full_injection(build_id, snapshot_id, owner, repo, files):
                 return
 
@@ -181,6 +190,39 @@ def measure_bundle(files: dict[str, str]) -> tuple[str, int]:
         tokens = estimate_tokens(bundle)
         logger.info("토큰을 세지 못해 문자 수로 추정했습니다: %d 토큰", tokens)
     return bundle, tokens
+
+
+def _store_sources(snapshot_id: int, files: dict[str, str]) -> None:
+    """수집한 소스 원문을 스냅샷에 보관한다. 실패해도 색인은 계속한다.
+
+    **전체 주입 여부와 무관하게 부른다.** 원문이 남는 곳이 전체 주입 번들뿐이면
+    소스가 이미 프롬프트에 다 들어간 저장소에만 원문이 있고 정작 큰 저장소에는 없다.
+    청크로는 복원할 수 없어서(db/sources.py 참고) 큰 저장소는 원문을 영영 못 준다.
+
+    **크기 상한을 넘으면 한 행도 넣지 않는다. 잘라서 넣지 않는다.** 일부만 보관하면
+    읽는 쪽이 "저장소에 없다"와 "잘려서 없다"를 구분할 수 없어져, 없다는 답이 거짓이 된다.
+
+    실패를 삼키는 이유는 _prune·_report 와 같다 — 부가 기능 때문에 색인이 실패하면 안 된다.
+    """
+    if not files:
+        return
+
+    total = sum(len(c.encode("utf-8")) for c in files.values())
+    if MAX_STORED_SOURCE_BYTES and total > MAX_STORED_SOURCE_BYTES:
+        logger.warning(
+            "소스가 보관 상한을 넘어 이 스냅샷(%s)에는 원문을 남기지 않습니다"
+            " (%d > %d 바이트). 일부만 보관하지 않습니다 — 잘린 원문은 '없다'는 답을"
+            " 거짓으로 만듭니다.",
+            snapshot_id, total, MAX_STORED_SOURCE_BYTES,
+        )
+        return
+
+    try:
+        saved = source_store.put_files(snapshot_id, files)
+    except DB_ERRORS as e:
+        logger.warning("소스 원문을 보관하지 못했습니다 (스냅샷 %s): %s", snapshot_id, e)
+        return
+    logger.info("소스 원문 %d개 파일 보관 (스냅샷 %s, %d바이트).", saved, snapshot_id, total)
 
 
 def _try_full_injection(

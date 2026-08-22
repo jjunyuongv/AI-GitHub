@@ -4,11 +4,15 @@
 테스트가 네트워크와 2GB 모델에 묶이면 안 된다.
 """
 
+import logging
+
+import psycopg
 import pytest
 
 from app.db import index_status
 from app.db import chunks as chunk_store
 from app.db import repos as repo_db
+from app.db import sources as source_store
 from app.services import indexer
 
 pytestmark = pytest.mark.usefixtures("db")
@@ -144,6 +148,94 @@ def test_small_repo_skips_indexing_and_stores_the_bundle(snapshot_id, full_injec
     )
     assert snapshot["source_tokens"] == 900
     assert "app/main.py" in snapshot["source_bundle"]
+
+
+# --- 소스 원문 보관 -----------------------------------------------------------
+
+
+def test_full_injection_path_still_stores_the_source(snapshot_id, full_injection):
+    """**이 테스트가 소스 보관 작업 전체의 이유다.**
+
+    전에는 원문이 남는 곳이 전체 주입 번들뿐이었다. 그러면 소스가 이미 프롬프트에
+    통째로 들어가 도구가 필요 없는 저장소에만 원문이 있고, 정작 큰 저장소에는 없다.
+    보관은 전체 주입 판정보다 **앞**에서 일어나야 그 역설이 풀린다.
+    """
+    _index_now(snapshot_id)
+
+    assert source_store.count(snapshot_id) == 1
+    assert source_store.get_file(snapshot_id, "app/main.py") == FILES["app/main.py"]
+
+
+def test_rag_path_stores_the_source_too(snapshot_id, fake_sources):
+    """검색 색인을 만드는 경로에서도 원문을 보관한다. 청크와 함께 남는다."""
+    build_id = _index_now(snapshot_id)
+
+    assert chunk_store.count(build_id, table=TABLE) == 3
+    assert source_store.get_file(snapshot_id, "app/main.py") == FILES["app/main.py"]
+
+
+def test_oversized_source_stores_nothing_at_all(
+    snapshot_id, fake_sources, monkeypatch, caplog
+):
+    """상한을 넘으면 **한 행도** 넣지 않는다. 잘라서 일부만 넣지 않는다.
+
+    일부만 보관하면 도구의 "없습니다"가 "저장소에 없다"인지 "잘려서 없다"인지
+    구분되지 않아, 없다는 답이 거짓이 된다. 색인 자체는 그대로 성공해야 한다.
+
+    **파일을 셋 주고 상한을 둘만 들어갈 크기로 잡는다.** 파일이 하나면 자르기와
+    전부 포기가 같은 결과를 내서 이 테스트가 아무것도 못 잡는다 — 실제로 처음엔
+    그랬고, 자르는 변이가 통과했다.
+    """
+    monkeypatch.setattr(
+        indexer, "fetch_source_files",
+        lambda o, r, ref="": {"a.py": "x = 1\n", "b.py": "y = 2\n", "c.py": "z = 3\n"},
+    )
+    monkeypatch.setattr(indexer, "MAX_STORED_SOURCE_BYTES", 12)  # 18바이트 중 둘이 들어갈 크기
+
+    with caplog.at_level(logging.WARNING, logger="app.services.indexer"):
+        build_id = _index_now(snapshot_id)
+
+    assert source_store.count(snapshot_id) == 0          # 부분 보관이 아니라 정확히 0
+    assert index_status.get(snapshot_id, table=TABLE)["status"] == "completed"
+    assert chunk_store.count(build_id, table=TABLE) == 3
+    assert any("보관 상한" in r.message for r in caplog.records)
+
+
+def test_zero_cap_disables_the_limit(snapshot_id, fake_sources, monkeypatch):
+    """0 은 '제한 없음'이다 — 다른 상한들과 같은 규칙."""
+    monkeypatch.setattr(indexer, "MAX_STORED_SOURCE_BYTES", 0)
+
+    _index_now(snapshot_id)
+
+    assert source_store.count(snapshot_id) == 1
+
+
+def test_indexing_survives_a_source_store_failure(snapshot_id, fake_sources, monkeypatch):
+    """보관이 실패해도 색인은 성공한다 — _prune·_report 와 같은 방침이다."""
+    def boom(snapshot_id, files):
+        raise psycopg.OperationalError("보관 실패")
+
+    monkeypatch.setattr(indexer.source_store, "put_files", boom)
+
+    build_id = _index_now(snapshot_id)
+
+    assert index_status.get(snapshot_id, table=TABLE)["status"] == "completed"
+    assert chunk_store.count(build_id, table=TABLE) == 3
+
+
+def test_reindexing_replaces_the_stored_source(snapshot_id, fake_sources, monkeypatch):
+    """파일이 줄어들면 옛 행이 남지 않는다. 남으면 도구가 없는 파일을 읽어 준다."""
+    monkeypatch.setattr(
+        indexer, "fetch_source_files",
+        lambda o, r, ref="": {"a.py": "x = 1\n", "b.py": "y = 2\n"},
+    )
+    _index_now(snapshot_id)
+    assert source_store.count(snapshot_id) == 2
+
+    monkeypatch.setattr(indexer, "fetch_source_files", lambda o, r, ref="": {"a.py": "x = 1\n"})
+    _index_now(snapshot_id)
+
+    assert source_store.list_paths(snapshot_id) == ["a.py"]
 
 
 def test_repo_over_the_token_threshold_falls_back_to_indexing(

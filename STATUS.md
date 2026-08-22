@@ -48,6 +48,7 @@
 | `MAX_ARCHIVE_BYTES` | `str(500 * 1024 * 1024)` | `app.config` | `MAX_ARCHIVE_BYTES` |
 | `MAX_SOURCE_FILE_BYTES` | `str(200 * 1024)` | `app.config` | `MAX_SOURCE_FILE_BYTES` |
 | `MAX_SOURCE_FILES` | `'3000'` | `app.config` | `MAX_SOURCE_FILES` |
+| `MAX_STORED_SOURCE_BYTES` | `str(20 * 1024 * 1024)` | `app.config` | `MAX_STORED_SOURCE_BYTES` |
 | `FULL_INJECTION_MAX_TOKENS` | `'57000'` | `app.config` | `FULL_INJECTION_MAX_TOKENS` |
 | `FULL_INJECTION_MAX_SOURCE_BYTES` | `str(500 * 1024)` | `app.config` | `FULL_INJECTION_MAX_SOURCE_BYTES` |
 | `DAILY_LLM_CALL_LIMIT` | `'500'` | `app.config` | `DAILY_LLM_CALL_LIMIT` |
@@ -57,7 +58,8 @@
 | `TRUST_PROXY_HEADERS` | `'0'` | `app.config` | `TRUST_PROXY_HEADERS` |
 
 기본값이 표현식인 것의 실제 크기 — `MAX_ARCHIVE_BYTES` 500MB ·
-`MAX_SOURCE_FILE_BYTES` 200KB · `FULL_INJECTION_MAX_SOURCE_BYTES` 500KB.
+`MAX_SOURCE_FILE_BYTES` 200KB · `FULL_INJECTION_MAX_SOURCE_BYTES` 500KB ·
+`MAX_STORED_SOURCE_BYTES` 20MB.
 `EMBEDDING_SOURCE_REPO` 는 비면 `EMBEDDING_MODEL` 로 폴백하고,
 `EMBEDDING_CACHE_DIR` 은 `Back/cache/models` 로 계산된다.
 
@@ -244,6 +246,19 @@ LLM 을 다시 부를 필요가 없다.
   계속 답한다. 실패해도 활성 포인터는 그대로다(`Back/app/db/index_status.py`).
 - **작은 저장소는 검색을 아예 안 만든다.** 소스 전체를 프롬프트에 넣고 빌드를 청크 0개로
   완료 처리한다(`Back/app/services/indexer.py`). 판정은 저장소 이름이 아니라 크기로만 한다.
+- **소스 원문을 스냅샷 단위로 보관한다** — `snapshot_source_files` 테이블
+  (`Back/app/db/sources.py`). **전체 주입 여부와 무관하게** 채운다. 전에는 원문이 남는 곳이
+  전체 주입 번들뿐이라, 소스가 이미 프롬프트에 다 들어간 저장소에만 원문이 있고 큰
+  저장소에는 없었다. 청크를 이어붙여 복원할 수 없다 — 실측에서 비어있지 않은 줄의
+  **8.5~12.7% 가 사라졌다**(§4 참고).
+- **보관 범위는 색인이 본 파일 집합과 같다. 이건 계약이지 결함이 아니다.**
+  `fetch_source_files()` 가 이미 거른 것은 보관해도 없다 — `language_for()` 가 모르는
+  확장자, `MAX_SOURCE_FILE_BYTES` 초과, 바이너리, `SKIP_DIR_PARTS`, `MAX_SOURCE_FILES` 상한
+  (`Back/app/services/github_client.py`). **"저장소에 없다"와 "수집 범위에 없다"는 다른
+  말이고, 섞이면 거절 축이 오염된다.**
+- **소스가 `MAX_STORED_SOURCE_BYTES` 를 넘으면 한 행도 보관하지 않는다. 자르지 않는다.**
+  일부만 보관하면 "없다"는 답이 "저장소에 없다"인지 "잘려서 없다"인지 구분되지 않는다.
+  보관 여부는 행 수로 답하고(상태 열은 두지 않는다) 사유는 로그에 남는다.
 
 ### 2.3 안 하는 것 — 의도적으로
 
@@ -276,6 +291,13 @@ LLM 을 다시 부를 필요가 없다.
 - **청크를 "원본의 연속된 줄"로 재정의** — 그래야 스니펫에 줄 번호를 붙일 수 있다.
   지금은 `_merge_small` 이 떨어진 조각을 이어붙여 줄이 어긋난다. 청크 경계가 바뀌므로
   재색인과 검색 품질 재평가가 따라온다(`Back/app/services/indexer.py` 의 `format_snippets` 참고).
+  **어긋나는 것은 줄 번호만이 아니다 — 내용이 사라진다.** 실측 3개 저장소에서 비어있지 않은
+  줄의 8.5% · 11.1% · 12.7% 가 어느 청크에도 없었고, 완전히 복원되는 파일은 0~32.6% 였다.
+  줄 수가 `end−start+1` 과 어긋나는 청크는 13.8~48.8%(48.8% 가 원래 적힌 그 수치다).
+  사라지는 곳은 넷 — `chunker.chunk_file:264`(import 노드를 건너뜀) ·
+  `_node_chunks:194-206`(inner 정의 사이의 틈과 꼬리) · `_merge_small:236`(40자 미만 폐기) ·
+  `_merge_small:228`(떨어진 조각을 이어 붙임). 반대로 `OVERLAP_LINES` 는 줄을 **중복**시킨다.
+  그래서 도구용 원문은 청크가 아니라 `snapshot_source_files` 에서 온다(§2.2).
 - **`EMBED_BATCH_SIZE` 는 이 기기로 답을 못 냈다.** 바꾸려면 배포 기기에서 재거나
   CPU 점유를 고정할 것. 배치를 바꾸면 벡터도 달라져(코사인 평균 0.993) 재색인이 따라온다.
 - **`FULL_INJECTION_MAX_TOKENS` 는 4세션 표본에서 역산했다.** 세션이 길어지면 임계값이
