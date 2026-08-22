@@ -299,6 +299,10 @@ LLM 을 다시 부를 필요가 없다.
 - **한 질문이 호출 여럿이 된다.** 토큰·시간·비용은 합산해 한 행으로 기록하고
   `round_trips` 를 함께 남긴다 — 마지막 호출만 세면 일일 상한이 사실상 꺼진다
   (`Back/app/db/runs.py`).
+- **그래서 `DAILY_LLM_CALL_LIMIT` 은 이제 "질문 수"이지 API 호출 수가 아니다.**
+  `check_and_reserve()` 는 질문마다 한 번 부르는데 실제 호출은 최대 `1 + 도구 호출 수`다.
+  **비용을 지키는 것은 `DAILY_TOKEN_LIMIT` 쪽이다** — 그쪽은 합산 토큰을 받으므로
+  라운드트립이 늘면 그만큼 빨리 찬다(`Back/app/services/rate_limit.py`).
 - **tool_result 는 대화 이력에 저장하지 않는다.** `messages` 는 질문과 최종 답변 2행만
   받는다 — 이력을 개수로 자르는 구조라(`MAX_HISTORY_MESSAGES`) 짝 잃은 `tool_use` 가
   생기면 API 가 거부한다(`Back/app/db/chats.py`).
