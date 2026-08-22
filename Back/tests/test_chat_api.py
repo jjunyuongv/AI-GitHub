@@ -187,8 +187,34 @@ def test_tools_are_attached_and_snippets_are_not_preinjected(
 
     assert captured_call[0]["snippets"] == ""
     assert fake_indexer.searched == []          # LLM 이 부르기 전에는 검색하지 않는다
-    assert captured_call[0]["tools"] == chat_api.tools.TOOL_SCHEMAS
+    assert [t["name"] for t in captured_call[0]["tools"]] == ["search_code"]
     assert callable(captured_call[0]["execute"])
+
+
+def test_a_snapshot_without_stored_sources_only_gets_search(
+    client, fake_chats, captured_call, monkeypatch
+):
+    """보관 소스가 없으면 read_file·grep 이 빠진다.
+
+    여기서는 DB 가 꺼져 있어 `tools.build` 가 그 판정을 못 하고 적은 쪽으로 떨어진다 —
+    실제 운영에서 재색인 전 스냅샷이 겪는 것과 같은 결과다.
+    """
+    _ask(client)
+
+    assert [t["name"] for t in captured_call[0]["tools"]] == ["search_code"]
+
+
+def test_a_snapshot_with_stored_sources_gets_every_tool(
+    client, fake_chats, captured_call, monkeypatch
+):
+    monkeypatch.setattr(
+        chat_api.tools, "build",
+        lambda snapshot_id: (chat_api.tools.TOOL_SCHEMAS, lambda n, p: ""),
+    )
+
+    _ask(client)
+
+    assert captured_call[0]["tools"] == chat_api.tools.TOOL_SCHEMAS
 
 
 def test_full_injection_snapshot_gets_no_tools(client, fake_chats, captured_call):

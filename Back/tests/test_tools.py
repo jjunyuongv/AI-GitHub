@@ -160,6 +160,64 @@ def test_missing_path_is_distinguished_from_missing_sources(fake):
     assert tools.NO_SOURCES not in out
 
 
+# --- 도구 목록 고르기 ----------------------------------------------------------
+
+
+def test_build_gives_every_tool_when_sources_are_stored(fake):
+    schemas, execute = tools.build(SNAPSHOT)
+
+    assert schemas == tools.TOOL_SCHEMAS
+    assert callable(execute)
+
+
+def test_build_drops_read_file_and_grep_without_sources(monkeypatch, fake):
+    """**빈손 도구를 주면 모델이 "없다"를 "저장소에 없다"로 읽는다.**
+
+    STATUS.md §2.2 의 계약("저장소에 없다"와 "수집 범위에 없다"는 다른 말)이 정확히
+    거기서 깨진다. 그리고 이 경로는 측정된 적이 없다 — 판정은 도구 셋이 다 도는
+    스냅샷에서 나왔다.
+    """
+    monkeypatch.setattr(tools, "source_store", FakeSources(files={}))
+
+    schemas, _ = tools.build(SNAPSHOT)
+
+    assert [t["name"] for t in schemas] == ["search_code"]
+
+
+def test_build_falls_back_to_search_only_when_the_db_is_down(monkeypatch, fake):
+    """읽지 못하면 적은 쪽으로 떨어진다 — 없는 소스를 읽으라고 주는 것보다 안전하다."""
+    class Broken(FakeSources):
+        def count(self, snapshot_id):
+            raise psycopg.OperationalError("죽었다")
+
+    monkeypatch.setattr(tools, "source_store", Broken())
+
+    schemas, execute = tools.build(SNAPSHOT)
+
+    assert [t["name"] for t in schemas] == ["search_code"]
+    assert callable(execute)
+
+
+def test_build_counts_the_storage_once(fake):
+    """`build` 가 센 값을 실행기가 다시 세지 않는다 — 대화 하나에 왕복 두 번은 낭비다."""
+    sources, _ = fake
+    _, execute = tools.build(SNAPSHOT)
+    execute("read_file", {"path": "app/main.py", "start_line": 1, "end_line": 2})
+
+    assert sources.count_calls == 1
+
+
+def test_the_two_tool_lists_are_stable_objects(fake):
+    """접두사가 갈리는 것은 **스냅샷마다 한 번**이어야 한다. 목록 자체가 흔들리면 안 된다."""
+    first, _ = tools.build(SNAPSHOT)
+    second, _ = tools.build(SNAPSHOT)
+
+    assert first == second
+    assert tools.SEARCH_ONLY_SCHEMAS == tuple(
+        t for t in tools.TOOL_SCHEMAS if t["name"] == "search_code"
+    )
+
+
 # --- 보관된 소스가 없는 스냅샷 -------------------------------------------------
 
 

@@ -90,8 +90,9 @@ def chat(req: ChatRequest, request: Request):
     try:
         if not source_bundle:
             if indexer.is_ready(session["snapshot_id"]):
-                tool_schemas = tools.TOOL_SCHEMAS
-                execute = tools.build_executor(session["snapshot_id"])
+                # 보관 소스가 없는 스냅샷은 read_file·grep 이 빈손이라 목록에서 빠진다
+                # (services/tools.build 참고 — 캐시 접두사가 왜 안 깨지는지도 거기 있다).
+                tool_schemas, execute = tools.build(session["snapshot_id"])
             else:
                 # 세션만 복원해 들어온 경우(/analyze 를 거치지 않음) 여기서 시작시킨다.
                 indexer.start(session["snapshot_id"], session["owner"], session["name"])

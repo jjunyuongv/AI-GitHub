@@ -118,6 +118,7 @@ AST 에서 자동 산출한다(sha256 앞 8자). 청킹을 고치면 자동으�
 | `MAX_HISTORY_MESSAGES` | `20` | `app.services.claude_client` | — |
 | `MAX_TOOL_ROUND_TRIPS` | `3` | `app.services.claude_client` | — |
 | `TOOL_SCHEMAS` | `3개` | `app.services.tools` | — |
+| `SEARCH_ONLY_SCHEMAS` | `1개` | `app.services.tools` | — |
 | `MAX_TOOL_RESULT_TOKENS` | `800` | `app.services.tools` | — |
 | `MAX_GREP_MATCHES` | `30` | `app.services.tools` | — |
 | `PRICING` | `1개` | `app.services.claude_client` | — |
@@ -297,9 +298,17 @@ LLM 을 다시 부를 필요가 없다.
   부른다(`Back/app/services/tools.py`). 사전 주입한 스니펫은 캐시 브레이크포인트 **뒤**라
   라운드트립마다 정가로 되풀이 청구된다 — 실측 산식으로 3회에 3.78배가 되어 판정 기준
   C(3배)를 넘는다. 도구만 쓰면 같은 3회가 2.11배다.
-- **도구 목록은 요청마다 같아야 한다.** `tools` 는 프롬프트 렌더 위치 0 이라 목록이
-  갈리면 캐시 접두사가 통째로 갈라진다. 보관된 소스가 없는 스냅샷도 도구는 그대로 받고
-  `read_file`·`grep` 이 "없다"고 답한다.
+- **도구 셋이 다 도는 것은 보관 소스가 있는 스냅샷뿐이다.** 없으면 `search_code` 만
+  남는다(`Back/app/services/tools.py` 의 `build`). 빈손인 `read_file`·`grep` 이
+  "없습니다"를 돌려주면 모델이 그것을 "저장소에 없다"로 읽어 **§2.2 의 계약이 깨지기**
+  때문이다. **그리고 그 축소된 경로는 측정된 적이 없다** — 판정은 도구 셋이 다 도는
+  스냅샷에서 나왔고 실측 호출 분포가 `grep 86 · search_code 83 · read_file 52` 였다.
+  해소는 `/admin/api/rebuild-index` 다.
+- **도구 목록이 갈리는 것은 스냅샷당 한 번뿐이라 캐시 접두사가 안 깨진다.**
+  `tools` 는 렌더 위치 0 이라 목록이 갈리면 접두사도 갈리는데, 이 분기는 (가) 스냅샷
+  속성이고 (나) 한 대화 안에서 안 바뀌며 (다) 보관은 0 → N 으로만 가는 단조 변화라
+  스냅샷 하나가 겪는 접두사 교체는 재색인 시점 한 번이다. 전체 주입 스냅샷에 도구를
+  안 붙이는 분기와 같은 성질이다. **요청 내용이나 저장소 이름으로 가르지 않는다.**
 - **도구를 아예 안 붙이는 경우는 둘뿐이다** — 전체 주입 스냅샷(소스가 이미 접두사에 다
   들어가 있다)과 색인이 아직 안 끝난 스냅샷. 둘 다 스냅샷 속성이고 한 대화 안에서
   바뀌지 않는다(`Back/app/api/chat.py`).

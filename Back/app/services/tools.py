@@ -105,6 +105,18 @@ TOOL_SCHEMAS = (
 )
 
 
+# 보관 소스가 없는 스냅샷에 줄 목록. **`search_code` 만 남는다.**
+#
+# 왜 빼는가: `read_file`·`grep` 이 빈손이면 "없습니다"를 돌려주는데, 모델이 그것을
+# "저장소에 없다"로 읽는다 — STATUS.md §2.2 의 계약("저장소에 없다"와 "수집 범위에
+# 없다"는 다른 말)이 정확히 여기서 깨진다. 부를 수 없는 도구는 아예 안 주는 편이 맞다.
+#
+# 그리고 **이 경로는 측정된 적이 없다.** 판정($2.13)은 도구 셋이 다 도는 스냅샷에서
+# 나왔고 실측 호출 분포가 grep 86 · search_code 83 · read_file 52 였다 —
+# 둘이 빠지면 측정한 것과 다른 시스템이다.
+SEARCH_ONLY_SCHEMAS = tuple(t for t in TOOL_SCHEMAS if t["name"] == "search_code")
+
+
 def _truncate(text: str) -> tuple[str, int, bool]:
     """토큰 상한을 넘으면 줄 단위로 자른다. `(결과, 토큰 수, 잘랐는가)`.
 
@@ -136,7 +148,38 @@ def _truncate(text: str) -> tuple[str, int, bool]:
     return cut, tokens, True
 
 
-def build_executor(snapshot_id: int):
+def build(snapshot_id: int) -> tuple[tuple, object]:
+    """이 스냅샷에 줄 `(도구 목록, 실행기)`.
+
+    **보관 소스가 없으면 `search_code` 하나만 준다** (`SEARCH_ONLY_SCHEMAS` 참고).
+
+    **이것은 도구 목록 분기다 — 캐시 접두사가 갈린다.** 그래도 되는 이유는
+    전체 주입 스냅샷에 도구를 안 붙이는 것과 **같은 성질**이기 때문이다:
+
+    - **스냅샷 속성**이다. 요청 내용이나 저장소 이름이 아니라 그 스냅샷에 보관된
+      소스가 있는가로만 갈린다
+    - **한 대화 안에서 안 바뀐다.** 세션은 스냅샷 하나에 묶여 있다
+    - **단조롭다.** `put_files` 는 0 → N 으로만 가고 되돌아오지 않으므로, 스냅샷
+      하나의 생애에서 접두사가 바뀌는 것은 재색인 시점 **한 번**뿐이다
+
+    즉 접두사가 두 갈래로 갈리되 각 스냅샷은 한 갈래에 머문다. 요청마다 흔들리는
+    분기가 아니라서 캐시가 깨지지 않는다.
+
+    보관 여부를 읽지 못하면(DB 장애) **적은 쪽으로 떨어진다** — 없는 소스를 읽으라고
+    도구를 주는 것보다 검색만 주는 편이 안전하다.
+    """
+    try:
+        stored = source_store.count(snapshot_id) > 0
+    except DB_ERRORS as e:
+        logger.warning(
+            "보관 소스 여부를 읽지 못해 검색 도구만 줍니다 (스냅샷 %s): %s", snapshot_id, e
+        )
+        stored = False
+    schemas = TOOL_SCHEMAS if stored else SEARCH_ONLY_SCHEMAS
+    return schemas, build_executor(snapshot_id, has_sources=stored)
+
+
+def build_executor(snapshot_id: int, has_sources: bool | None = None):
     """이 스냅샷에 묶인 도구 실행기. `(이름, 입력) -> 결과 문자열`.
 
     **예외를 올리지 않는다.** 도구가 던지면 루프가 그것을 `is_error` 로 감싸 돌려주는데,
@@ -146,12 +189,13 @@ def build_executor(snapshot_id: int):
     보관 여부는 한 번만 확인하고 기억한다 — 도구를 부를 때마다 세면 대화 하나에 DB 왕복이
     라운드트립 수만큼 늘어난다. 대화 도중에 재색인이 끝나 값이 바뀌어도 다음 질문에 반영된다.
     """
-    has_sources: list[bool | None] = [None]
+    # `build()` 가 이미 세었으면 그 값을 받는다 — 대화 하나에 DB 왕복이 두 번 될 이유가 없다.
+    cached: list[bool | None] = [has_sources]
 
     def _stored() -> bool:
-        if has_sources[0] is None:
-            has_sources[0] = source_store.count(snapshot_id) > 0
-        return has_sources[0]
+        if cached[0] is None:
+            cached[0] = source_store.count(snapshot_id) > 0
+        return cached[0]
 
     def _search_code(params: dict) -> tuple[str, list[str]]:
         query = (params.get("query") or "").strip()
