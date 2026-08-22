@@ -61,6 +61,7 @@ from app.core.chunk_rule import rule_version
 from app.core.chunker import chunk_files
 from app.db import chunks as chunk_store
 from app.db import index_status, pool
+from app.db import sources as source_store
 from app.services import claude_client, tools
 from app.services.indexer import format_snippets, measure_bundle, search_code
 from tests.search_eval_dataset import (
@@ -194,6 +195,23 @@ def _score(answer: str, case: dict) -> bool:
     if case["kind"] == "absent":
         return _refused(answer)
     return _cited(answer, case)
+
+
+def _ensure_sources(snapshot_id: int, files: dict) -> None:
+    """`read_file`·`grep` 이 읽을 원문. 없으면 로컬 캐시에서 채운다. **무과금이다.**
+
+    **이걸 빼면 도구 팔이 `search_code` 하나짜리로 측정된다.** 평가용 스냅샷은 소스
+    보관 기능보다 먼저 색인됐고 재색인은 수동이라, 그냥 두면 `read_file`·`grep` 이
+    전부 "보관된 소스가 없습니다"를 돌려준다 — 프로덕션의 옛 스냅샷과 같은 상태다.
+    그 상태를 재는 것은 이 측정의 목적이 아니다(그건 재색인으로 해소되는 과도기다).
+
+    색인과 같은 파일 집합을 쓴다(`_source_files` 의 로컬 캐시) — 여기서 다시 받으면
+    측정마다 입력이 달라질 수 있다.
+    """
+    if source_store.count(snapshot_id):
+        return
+    saved = source_store.put_files(snapshot_id, files)
+    print(f"  (측정 준비) 소스 원문 {saved}개 파일을 스냅샷 {snapshot_id} 에 보관했다 — 무과금")
 
 
 def _ensure_index(snapshot_id: int, repo: tuple[str, str], files: dict) -> None:
@@ -346,6 +364,7 @@ def test_measure_answer_quality(set_name, capsys):
     files = _source_files(repo)
     snapshot_id = _snapshot_for(repo)
     _ensure_index(snapshot_id, repo, files)
+    _ensure_sources(snapshot_id, files)
 
     # 무과금이다 — 토큰 계산 엔드포인트는 추론을 돌리지 않는다.
     bundle, bundle_tokens = measure_bundle(files)
