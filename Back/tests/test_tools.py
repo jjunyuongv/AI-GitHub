@@ -320,8 +320,31 @@ def test_trace_records_the_result_size(fake):
     execute("read_file", {"path": "app/main.py", "start_line": 1, "end_line": 3})
 
     entry = execute.trace[0]
-    assert entry["result_chars"] > 0
+    assert entry["sent_chars"] > 0
     assert entry["result_tokens"] > 0
+
+
+def test_result_tokens_is_measured_before_truncation(monkeypatch, fake):
+    """**자른 뒤 값을 남기면 가정을 검증할 수 없다.**
+
+    07 조사가 잡은 가정은 r=1,500 이고 상한은 800 이다. 자른 뒤를 기록하면 언제나
+    상한에 눌린 수치가 남아서, "원래 얼마짜리였나"를 영영 못 본다 — 상한이 너무
+    빡빡한지도, 1,500 이 현실적이었는지도 판단할 근거가 사라진다.
+    """
+    long_file = {"big.py": "".join(f"line {i}\n" for i in range(1, 401))}
+    monkeypatch.setattr(tools, "source_store", FakeSources(files=long_file))
+    monkeypatch.setattr(
+        tools, "count_input_tokens", lambda text: tools.MAX_TOOL_RESULT_TOKENS * 4
+    )
+    execute = tools.build_executor(SNAPSHOT)
+
+    execute("read_file", {"path": "big.py", "start_line": 1, "end_line": 400})
+
+    entry = execute.trace[0]
+    # 절단 전 크기가 그대로 남는다 — 상한에 눌린 800 이 아니다
+    assert entry["result_tokens"] == tools.MAX_TOOL_RESULT_TOKENS * 4
+    # 실제로 간 것은 잘린 쪽이다. 두 값은 다른 시점이다
+    assert entry["sent_chars"] < len(long_file["big.py"])
 
 
 def test_trace_does_not_carry_the_result_body(fake):

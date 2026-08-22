@@ -296,8 +296,10 @@ def _summarize(rows: list[dict]) -> dict:
         # 몇 건인지 안 보여서 함께 센다.
         "avg_round_trips": round(sum(r["round_trips"] for r in rows) / len(rows), 2),
         "capped": sum(1 for r in rows if r["hit_round_trip_cap"]),
-        # **산식의 a·r 실측치.** 지금 상한 셋은 a=150 · r=1,500 추정 위에 서 있다.
-        # 이 둘이 크게 다르면 MAX_TOOL_ROUND_TRIPS 를 다시 계산해야 한다.
+        # **산식의 a·r 실측치.** 07 조사가 잡은 가정은 a=150 · r=1,500 이고,
+        # 3.78×/2.11× 가 거기서 나왔다 — 순수 tool use 로 간 근거다.
+        # r 은 **자르기 전** 크기다. 자른 뒤 값과 대조하면 상한(800)에 눌린 수치를 보게
+        # 되어 가정을 검증할 수 없다.
         "avg_tool_result_tokens": _mean(
             [e["result_tokens"] for r in rows for e in r["tool_trace"]]
         ),
@@ -424,16 +426,29 @@ def _print_report(set_name, repo, cases, arms, results, totals,
         ("질문당 지연(ms)", "avg_llm_ms"),
         ("질문당 도구호출", "avg_round_trips"),
         ("한도에 닿음", "capped"),
-        ("도구결과 토큰(r)", "avg_tool_result_tokens"),
+        ("도구결과 절단전(r)", "avg_tool_result_tokens"),
         ("도구턴 출력(a)", "avg_tool_call_output_tokens"),
     ):
         print(f"{label:<16}" + "".join(f"{totals[a][key]:>12}" for a in arms))
 
-    # 산식이 선 가정 위에 서 있다는 것을 표 옆에 적어 둔다. 실측이 크게 다르면
-    # MAX_TOOL_ROUND_TRIPS 를 다시 계산해야 한다.
-    print(f"{'  (산식 가정)':<16}" + "".join(
-        f"{'r=800·a=150' if a == 'tool' else '-':>12}" for a in arms
-    ))
+    # **가정과 상한은 다른 양이다.** 섞어 놓으면 대조가 성립하지 않는다.
+    #   r=1,500 · a=150  캡이 생기기 전 조사가 잡은 가정. 3.78×/2.11× 가 여기서 나왔고
+    #                    그것이 순수 tool use 로 간 근거다 → 이 값이 실측 대조 대상이다
+    #   r=800            MAX_TOOL_RESULT_TOKENS. 천장이지 기대값이 아니다.
+    #                    모든 결과가 여기 닿는 최악을 재서 R=3 을 정했다(2.51×)
+    # 평균이 800 아래인 것은 당연하므로 아무것도 증명하지 않는다. 봐야 할 것은
+    # **절단 전 크기가 1,500 근처인가**와 **절단이 얼마나 자주 걸렸는가**다.
+    if "tool" in arms:
+        tool = totals["tool"]
+        print(
+            f"\n  대조 — 07 조사의 가정 r=1,500 · a=150"
+            f"  vs  실측 r={tool['avg_tool_result_tokens']} · a={tool['avg_tool_call_output_tokens']}"
+        )
+        print(
+            f"  상한 r={tools.MAX_TOOL_RESULT_TOKENS}(MAX_TOOL_RESULT_TOKENS) 는 천장이다 —"
+            f" 평균이 그 아래인 것은 대조가 아니다."
+            f" 절단이 걸린 질의: {sum(1 for r in results['tool'] if 'result_tokens' in r['caps_hit'])}건"
+        )
     for arm in arms:
         if totals[arm]["caps_hit"]:
             print(f"  {ARM_LABELS[arm]} 에서 걸린 캡: {', '.join(totals[arm]['caps_hit'])}")

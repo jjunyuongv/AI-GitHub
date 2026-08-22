@@ -242,8 +242,12 @@ def build_executor(snapshot_id: int):
                 entry["error"] = True
 
         output, tokens, cut = _truncate(output)
-        entry["result_chars"] = len(output)
+        # **둘은 다른 시점의 값이다.** result_tokens 는 자르기 **전** 크기(캡이 무엇을
+        # 막았는지), sent_chars 는 실제로 모델에 **간** 크기다. 이름을 뭉뚱그리면
+        # 분석이 조용히 틀린다 — 실제로 한 번 어긋나 있었다.
+        # 청구된 토큰은 이 둘이 아니라 `_call_loop` 의 호출별 input_tokens 가 정본이다.
         entry["result_tokens"] = tokens
+        entry["sent_chars"] = len(output)
         entry["caps"] = [*caps, *(["result_tokens"] if cut else [])]
         return output
 
