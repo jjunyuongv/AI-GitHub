@@ -17,7 +17,6 @@ from app.config import (
     FULL_INJECTION_MAX_TOKENS,
     MAX_STORED_SOURCE_BYTES,
 )
-from app.core.chunk_rule import rule_version
 from app.core.chunker import chunk_files
 from app.core.embeddings import count_tokens, embed_documents, embed_query, input_limit
 from app.db import chunks as chunk_store

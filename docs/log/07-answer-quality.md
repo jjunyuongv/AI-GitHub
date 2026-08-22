@@ -8,6 +8,7 @@
 - 거절 채점기 교체 — 무과금 재채점으로 기준선을 다시 썼다 - 2026-08-22
 - 1단계 착수 전 조사 — 소스가 없다는 것을 확인했다 - 2026-08-22
 - 소스 보관 — 스냅샷 단위로 원문을 남긴다 - 2026-08-22
+- 죽은 import 정리 — `rule_version` 을 지웠다 - 2026-08-22
 
 <!-- BODY -->
 
@@ -518,4 +519,55 @@ STATUS.md §2.2 에 적었다. 프롬프트 반영은 1단계로 미룬다 — �
 `from app.core.chunk_rule import rule_version` 를 F401 로 잡는다. **이번 작업이 만든 것이
 아니다** — `git show HEAD:` 로 뽑은 사본에도 같은 경고가 뜬다(`index_queue.py:69` 가 자기
 안에서 따로 import 한다). 07 절들의 "ruff 통과" 기록과 어긋나므로 여기 남긴다.
-CLAUDE.md §3 대로 지우지 않았다.
+CLAUDE.md §3 대로 지우지 않았다. (→ 아래 '죽은 import 정리' 절에서 지웠다)
+
+## 죽은 import 정리 — `rule_version` 을 지웠다 - 2026-08-22
+
+브랜치 `chore/dead-code`. 위 절이 남겨 둔 `indexer.py` 의
+`from app.core.chunk_rule import rule_version` 하나만 지운다.
+
+### 지우기 전에 확인한 것 — ruff 의 F401 만 믿지 않았다
+
+이 저장소에는 **심볼을 정적/동적으로 읽는 코드가 셋** 있어서, "참조가 없다"를 린터
+하나로 판정하면 안 된다. 전수로 확인했다:
+
+| 읽는 쪽 | 무엇을 읽는가 | `indexer.rule_version` 에 닿는가 |
+|---|---|---|
+| `chunk_rule._normalized_source` | `_RULE_FUNCTIONS` 6개의 `inspect.getsource` → AST | 아니다 — 전부 `chunker` 의 함수다 |
+| `chunk_rule._constants` | `chunker` 모듈 속성 + `config` 두 개 | 아니다 |
+| `test_status_doc._actual` | STATUS.md 표가 가리킨 심볼을 `getattr(import_module(...))` | 아니다 — §1.4 의 `app.services.indexer` 행은 `TOP_K`·`MAX_HANDOFF_CHARS`·`LOW_INFO_PENALTY`·`CANDIDATE_MULTIPLIER`·`STYLE_LANGUAGES`·`ENTRY_POINT_MARKERS`·`INHERITANCE_MARKERS` 뿐이다 |
+
+`test_status_doc._config_defaults`·`_config_env_keys` 도 AST 를 쓰지만 `app/config.py`
+한 파일만 파싱한다. `getattr`·`importlib`·`__dict__`·`vars()`·`inspect.getsource`·
+`ast.parse` 를 `Back/**/*.py` 전수 검색해 위 다섯 곳이 전부임을 확인했다.
+
+전 저장소(`.md`·`.sql` 포함) 검색에서도 `rule_version` 소비자는 전부
+`from app.core.chunk_rule import ...` 로 직접 가져간다 — `indexer` 를 경유하는 곳은 없다.
+
+### 진짜 위험은 F401 이 아니라 해시였다
+
+`rule_version()` 이 달라지면 **모든 활성 색인이 낡은 것으로 뜬다.** 이 함수의 재료가
+청킹 함수의 AST 라서, indexer 를 건드리는 것이 해시에 닿는지부터 실측했다:
+
+    지우기 전  822bb217
+    지운 후    822bb217   (동일 — 07 로그가 기록한 현행 규칙 그대로)
+
+논증으로 끝내지 않고 잰 이유는, 틀렸을 때의 대가가 전체 재색인이기 때문이다.
+
+### 검증
+
+- `ruff check app tests --select E9,F` — **All checks passed** (이 저장소에서 처음으로 0건)
+- **358 passed / 13 skipped** — 지우기 전과 같은 수. 줄어든 테스트 없음
+- 서버 기동: `uvicorn app.main:app --port 8123` → `Application startup complete`,
+  `GET /health` 200 `{"status":"ok"}`
+- 기동 경로 직접 확인: `main._log_stale_indexes()` 가
+  `청킹 규칙 822bb217 — 낡은 색인 없음` 을 낸다. **`main.py:25` 가 `rule_version()` 을
+  쓰는 바로 그 함수라, 지운 import 와 가장 가까운 경로다**
+- `hasattr(indexer, "rule_version")` → `False`
+
+### STATUS.md §4 에는 이 항목이 없었다
+
+작업 지시는 "§4 에서 해당 줄을 제거하라"였는데 §4(열린 과제)에 그 줄은 처음부터 없다.
+기록은 `TROUBLESHOOTING.md` 의 '테스트 · 검증 · 도구' 절과 위 '함정' 절 두 곳에만 있었다.
+`TROUBLESHOOTING.md` 의 행은 **그대로 둔다** — 그 행이 남기는 것은 이 import 의 존재가
+아니라 "린터 경고가 내 것인지 `git show HEAD:` 로 먼저 가른다"는 방법이고, 그건 여전히 유효하다.
