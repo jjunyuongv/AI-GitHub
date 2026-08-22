@@ -73,6 +73,12 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
+**변이 테스트의 대역 데이터는 "두 동작이 다른 결과를 내도록" 설계할 것.**
+같은 결과를 내면 변이가 통과해도 검증된 것이 아니다 — 테스트가 그 결정을 안 재고 있었던 것이다.
+전례 2건 — 순서 정렬 키를 이름 길이로 잡았는데 두 이름의 길이가 같아 순서가 안 바뀐 것,
+대역 파일이 하나뿐이라 "잘라서 일부 보관"과 "전부 포기"가 둘 다 0행이었던 것.
+둘 다 `TROUBLESHOOTING.md` 의 '테스트 · 검증 · 도구' 절에 있다(줄 번호는 행이 늘면 밀린다).
+
 ## 5. Plan Tracking (plan.md)
 
 프로젝트 루트의 `plan.md`는 전체 작업 진행 상황을 기록하는 단일 소스입니다.
