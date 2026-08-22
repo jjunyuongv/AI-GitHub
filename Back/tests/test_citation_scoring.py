@@ -173,12 +173,56 @@ def test_score_picks_the_ruler_by_kind():
 
 # ── 집계 ──────────────────────────────────────────────────────
 
-def _row(kind: str, ok: bool, round_trips: int = 0, capped: bool = False) -> dict:
+def _row(
+    kind: str, ok: bool, round_trips: int = 0, capped: bool = False,
+    trace=None, calls=None,
+) -> dict:
     return {
         "kind": kind, "ok": ok, "cost_usd": 0.01, "llm_ms": 1000,
         "cache_write_tokens": 0, "cache_read_tokens": 0,
         "round_trips": round_trips, "hit_round_trip_cap": capped,
+        "tool_trace": trace or [], "calls": calls or [],
+        "caps_hit": sorted(
+            {c for e in (trace or []) for c in e["caps"]}
+            | ({"round_trips"} if capped else set())
+        ),
     }
+
+
+def test_measured_a_and_r_come_out_of_the_rows():
+    """상한 셋은 a=150·r=1,500 **추정** 위에 서 있다. 이 두 값이 그 가정을 대체한다.
+
+    기록이 없으면 측정을 하고도 다음 설계에 쓸 숫자가 안 남는다.
+    """
+    rows = [
+        _row(
+            "korean", True, round_trips=2,
+            trace=[
+                {"tool": "grep", "input": {}, "caps": [], "result_tokens": 400},
+                {"tool": "read_file", "input": {}, "caps": ["result_tokens"],
+                 "result_tokens": 1200},
+            ],
+            calls=[
+                {"output_tokens": 100}, {"output_tokens": 200}, {"output_tokens": 500},
+            ],
+        )
+    ]
+
+    summary = _summarize(rows)
+
+    assert summary["avg_tool_result_tokens"] == 800.0     # (400+1200)/2
+    assert summary["avg_tool_call_output_tokens"] == 150.0  # 마지막(500)은 a_final 이라 뺀다
+    assert summary["caps_hit"] == ["result_tokens"]
+
+
+def test_caps_hit_gathers_every_cap_including_the_round_trip_one():
+    rows = [
+        _row("korean", True, capped=True,
+             trace=[{"tool": "grep", "input": {}, "caps": ["grep_matches"],
+                     "result_tokens": 10}]),
+    ]
+
+    assert _summarize(rows)["caps_hit"] == ["grep_matches", "round_trips"]
 
 
 def test_round_trips_are_averaged_over_every_row():

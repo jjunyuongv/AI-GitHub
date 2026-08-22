@@ -433,6 +433,51 @@ def test_tools_are_identical_on_every_call(fake_api):
     assert sent[0]["tools"] == sent[1]["tools"] == TOOLS
 
 
+def test_per_call_usage_is_kept_not_only_the_sum(fake_api):
+    """합계만 남기면 산식의 aᵢ 를 사후에 못 되살린다 — 지금 상한은 그 추정 위에 서 있다."""
+    fake_api([
+        _reply([_use("t1", "grep", {"pattern": "a"})], "tool_use", tokens=10),
+        _reply([_text("답")], "end_turn", tokens=30),
+    ])
+
+    result = _run()
+
+    assert [c["output_tokens"] for c in result["calls"]] == [10, 30]
+    assert [c["stop_reason"] for c in result["calls"]] == ["tool_use", "end_turn"]
+
+
+def test_tool_trace_is_carried_out_with_round_numbers(fake_api):
+    """실행기가 남긴 내역에 라운드 번호를 찍어 함께 돌려준다."""
+    def execute(name, params):
+        execute.trace.append({"tool": name, "input": params, "caps": []})
+        return "결과"
+
+    execute.trace = []
+    fake_api([
+        _reply([_use("t1", "grep", {"pattern": "a"})], "tool_use"),
+        _reply([_use("t2", "read_file", {"path": "a.py"})], "tool_use"),
+        _reply([_text("답")], "end_turn"),
+    ])
+
+    result = _run(execute=execute)
+
+    assert [e["tool"] for e in result["tool_trace"]] == ["grep", "read_file"]
+    assert [e["round"] for e in result["tool_trace"]] == [1, 2]
+
+
+def test_a_traceless_executor_still_works(fake_api):
+    """대역 실행기는 내역을 안 남긴다. 루프가 그것에 기대면 안 된다."""
+    fake_api([
+        _reply([_use("t1", "grep", {"pattern": "a"})], "tool_use"),
+        _reply([_text("답")], "end_turn"),
+    ])
+
+    result = _run()
+
+    assert result["tool_trace"] == []
+    assert result["text"] == "답"
+
+
 def test_no_tool_use_means_no_round_trips(fake_api):
     fake_api([_reply([_text("바로 답")], "end_turn")])
 

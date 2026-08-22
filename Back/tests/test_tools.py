@@ -296,6 +296,98 @@ def test_truncation_falls_back_when_tokens_cannot_be_counted(monkeypatch, fake):
     assert "줄만 보냈습니다" in out
 
 
+# --- 측정용 호출 내역 ----------------------------------------------------------
+#
+# **답변 원문만으로는 비용 산식을 되살릴 수 없다.** 지금 상한 셋은 a=150·r=1,500
+# 추정 위에 서 있고, 그 가정을 실측으로 대체하려면 "어떤 도구를 어떤 인자로 불러
+# 결과가 몇 토큰이었나"가 필요하다. 기록이 없으면 측정을 하고도 다음 설계에 쓸 숫자가
+# 안 남는다 — 0단계가 답변 원문을 남겨 둔 덕에 $0 로 재채점한 것과 같은 이유다.
+
+
+def test_every_call_is_traced_with_its_arguments(fake):
+    execute = tools.build_executor(SNAPSHOT)
+    execute("search_code", {"query": "인증"})
+    execute("read_file", {"path": "app/main.py", "start_line": 1, "end_line": 3})
+
+    assert [e["tool"] for e in execute.trace] == ["search_code", "read_file"]
+    assert execute.trace[0]["input"] == {"query": "인증"}
+    assert execute.trace[1]["input"]["start_line"] == 1
+
+
+def test_trace_records_the_result_size(fake):
+    """산식의 r 이다. 크기가 없으면 라운드트립 상한을 다시 계산할 수 없다."""
+    execute = tools.build_executor(SNAPSHOT)
+    execute("read_file", {"path": "app/main.py", "start_line": 1, "end_line": 3})
+
+    entry = execute.trace[0]
+    assert entry["result_chars"] > 0
+    assert entry["result_tokens"] > 0
+
+
+def test_trace_does_not_carry_the_result_body(fake):
+    """본문은 보관 소스에 이미 있다. 기록에 또 실으면 jsonl 이 소스만큼 커진다."""
+    execute = tools.build_executor(SNAPSHOT)
+    execute("read_file", {"path": "app/main.py", "start_line": 1, "end_line": 3})
+
+    assert "def run():" not in repr(execute.trace[0])
+
+
+def test_trace_names_which_cap_fired(monkeypatch, fake):
+    """"캡에 걸렸다"로는 부족하다 — **어느 캡인지**를 알아야 무엇을 고칠지 정해진다."""
+    monkeypatch.setattr(
+        tools, "source_store", FakeSources(hits=_hits(tools.MAX_GREP_MATCHES + 10))
+    )
+    execute = tools.build_executor(SNAPSHOT)
+
+    execute("grep", {"pattern": "hit"})
+
+    assert execute.trace[0]["caps"] == ["grep_matches"]
+
+
+def test_trace_marks_the_token_cap_separately(monkeypatch, fake):
+    long_file = {"big.py": "".join(f"line {i}\n" for i in range(1, 401))}
+    monkeypatch.setattr(tools, "source_store", FakeSources(files=long_file))
+    monkeypatch.setattr(
+        tools, "count_input_tokens", lambda text: tools.MAX_TOOL_RESULT_TOKENS * 4
+    )
+    execute = tools.build_executor(SNAPSHOT)
+
+    execute("read_file", {"path": "big.py", "start_line": 1, "end_line": 400})
+
+    assert execute.trace[0]["caps"] == ["result_tokens"]
+    assert execute.trace[0]["result_tokens"] == tools.MAX_TOOL_RESULT_TOKENS * 4
+
+
+def test_uncapped_calls_record_no_cap(fake):
+    execute = tools.build_executor(SNAPSHOT)
+    execute("read_file", {"path": "app/main.py", "start_line": 1, "end_line": 3})
+
+    assert execute.trace[0]["caps"] == []
+
+
+def test_trace_marks_errors(monkeypatch, fake):
+    class Broken(FakeSources):
+        def get_file(self, snapshot_id, path):
+            raise psycopg.OperationalError("죽었다")
+
+    monkeypatch.setattr(tools, "source_store", Broken())
+    execute = tools.build_executor(SNAPSHOT)
+
+    execute("read_file", {"path": "a.py", "start_line": 1, "end_line": 2})
+    execute("list_files", {})
+
+    assert [e["error"] for e in execute.trace] == [True, True]
+
+
+def test_each_conversation_gets_its_own_trace(fake):
+    """실행기는 대화 하나에 묶인다. 내역이 섞이면 질의별 집계가 어긋난다."""
+    first, second = tools.build_executor(SNAPSHOT), tools.build_executor(SNAPSHOT)
+    first("grep", {"pattern": "a"})
+
+    assert len(first.trace) == 1
+    assert second.trace == []
+
+
 # --- 오류 처리 ----------------------------------------------------------------
 
 

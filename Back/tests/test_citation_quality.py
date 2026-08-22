@@ -249,11 +249,28 @@ def _ask(
         # 비용 모델이 이 값 위에 서 있다. 도구를 안 쓴 팔은 0 이다.
         "round_trips": result.get("round_trips", 0),
         "hit_round_trip_cap": result.get("hit_round_trip_cap", False),
+        # **호출별 사용량과 도구 호출 내역.** 0단계가 답변 원문을 남겨 둔 덕에 채점기를
+        # 고치고 $0 으로 재채점할 수 있었다. 이번 측정에서 대체하려는 것은 비용 산식의
+        # 가정(a=150 · r=1,500)이라, 원문만으로는 부족하고 이 둘이 있어야 한다.
+        # tool_result 원문은 싣지 않는다 — 크기와 절단 여부면 산식에 충분하고,
+        # 본문은 보관 소스에 이미 있다.
+        "calls": result.get("calls", []),
+        "tool_trace": result.get("tool_trace", []),
+        # 어느 캡이 걸렸는가. 셋을 한 자리에 모아 스캔할 수 있게 한다.
+        "caps_hit": sorted(
+            {cap for entry in result.get("tool_trace", []) for cap in entry["caps"]}
+            | ({"round_trips"} if result.get("hit_round_trip_cap") else set())
+        ),
     }
 
 
 def _rate(rows: list[dict]) -> float:
     return round(sum(r["ok"] for r in rows) / len(rows), 4) if rows else 0.0
+
+
+def _mean(values: list[int]) -> float:
+    """빈 목록이면 0.0 — 도구를 안 쓴 팔이 여기로 온다."""
+    return round(sum(values) / len(values), 1) if values else 0.0
 
 
 def _summarize(rows: list[dict]) -> dict:
@@ -279,6 +296,17 @@ def _summarize(rows: list[dict]) -> dict:
         # 몇 건인지 안 보여서 함께 센다.
         "avg_round_trips": round(sum(r["round_trips"] for r in rows) / len(rows), 2),
         "capped": sum(1 for r in rows if r["hit_round_trip_cap"]),
+        # **산식의 a·r 실측치.** 지금 상한 셋은 a=150 · r=1,500 추정 위에 서 있다.
+        # 이 둘이 크게 다르면 MAX_TOOL_ROUND_TRIPS 를 다시 계산해야 한다.
+        "avg_tool_result_tokens": _mean(
+            [e["result_tokens"] for r in rows for e in r["tool_trace"]]
+        ),
+        "avg_tool_call_output_tokens": _mean([
+            call["output_tokens"]
+            for r in rows
+            for call in r["calls"][:-1]  # 마지막 호출은 답변이라 a_final 이다
+        ]),
+        "caps_hit": sorted({cap for r in rows for cap in r["caps_hit"]}),
     }
 
 
@@ -396,8 +424,19 @@ def _print_report(set_name, repo, cases, arms, results, totals,
         ("질문당 지연(ms)", "avg_llm_ms"),
         ("질문당 도구호출", "avg_round_trips"),
         ("한도에 닿음", "capped"),
+        ("도구결과 토큰(r)", "avg_tool_result_tokens"),
+        ("도구턴 출력(a)", "avg_tool_call_output_tokens"),
     ):
         print(f"{label:<16}" + "".join(f"{totals[a][key]:>12}" for a in arms))
+
+    # 산식이 선 가정 위에 서 있다는 것을 표 옆에 적어 둔다. 실측이 크게 다르면
+    # MAX_TOOL_ROUND_TRIPS 를 다시 계산해야 한다.
+    print(f"{'  (산식 가정)':<16}" + "".join(
+        f"{'r=800·a=150' if a == 'tool' else '-':>12}" for a in arms
+    ))
+    for arm in arms:
+        if totals[arm]["caps_hit"]:
+            print(f"  {ARM_LABELS[arm]} 에서 걸린 캡: {', '.join(totals[arm]['caps_hit'])}")
 
     # 판정 기준 C 는 **기준선 대비 배수**로 정해져 있다. 눈으로 나누게 두면 틀린다.
     base = totals["rag"]["avg_cost_usd"]

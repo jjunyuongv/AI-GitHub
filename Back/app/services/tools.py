@@ -105,29 +105,35 @@ TOOL_SCHEMAS = (
 )
 
 
-def _truncate(text: str) -> str:
-    """토큰 상한을 넘으면 줄 단위로 자르고 **잘렸다는 사실을 결과 안에 적는다.**
+def _truncate(text: str) -> tuple[str, int, bool]:
+    """토큰 상한을 넘으면 줄 단위로 자른다. `(결과, 토큰 수, 잘랐는가)`.
 
-    적지 않으면 모델이 잘린 것을 "없다"로 읽는다 — 그건 거절 축이 재려는 바로 그 실패다.
+    **잘랐다는 사실을 결과 안에 적는다.** 적지 않으면 모델이 잘린 것을 "없다"로 읽는다 —
+    그건 거절 축이 재려는 바로 그 실패다.
 
     **문자 수 추정으로 먼저 거른다.** `estimate_tokens` 는 2.0자/토큰이라 코드에서는
     실제보다 토큰을 많게 잡으므로, 추정이 상한 안이면 실제도 안이다 — 그 경우 토큰 계산
     왕복을 아낀다. 추정이 넘을 때만 실제로 세어 자를 지점을 정한다
     (`_try_full_injection` 이 바이트로 먼저 거르고 토큰으로 판정하는 것과 같은 구조다).
-    """
-    if estimate_tokens(text) <= MAX_TOOL_RESULT_TOKENS:
-        return text
 
-    tokens = count_input_tokens(text) or estimate_tokens(text)
+    토큰 수를 함께 돌려주는 이유는 측정이다 — 비용 산식의 `r` 이 실제로 얼마인지는
+    이 값으로만 알 수 있고, 지금 산식은 추정치(1,500) 위에 서 있다.
+    """
+    estimated = estimate_tokens(text)
+    if estimated <= MAX_TOOL_RESULT_TOKENS:
+        return text, estimated, False
+
+    tokens = count_input_tokens(text) or estimated
     if tokens <= MAX_TOOL_RESULT_TOKENS:
-        return text
+        return text, tokens, False
 
     lines = text.splitlines()
     keep = max(1, int(len(lines) * MAX_TOOL_RESULT_TOKENS / tokens))
-    return "\n".join(lines[:keep]) + (
+    cut = "\n".join(lines[:keep]) + (
         f"\n\n(결과가 길어 앞 {keep}/{len(lines)}줄만 보냈습니다."
         " 범위나 검색어를 좁혀 다시 부르세요.)"
     )
+    return cut, tokens, True
 
 
 def build_executor(snapshot_id: int):
@@ -147,50 +153,53 @@ def build_executor(snapshot_id: int):
             has_sources[0] = source_store.count(snapshot_id) > 0
         return has_sources[0]
 
-    def _search_code(params: dict) -> str:
+    def _search_code(params: dict) -> tuple[str, list[str]]:
         query = (params.get("query") or "").strip()
         if not query:
-            return "query 가 비어 있습니다."
+            return "query 가 비어 있습니다.", []
         found = indexer.search_code(snapshot_id, query)
-        return indexer.format_snippets(found) or f"'{query}' 로 검색된 코드가 없습니다."
+        return indexer.format_snippets(found) or f"'{query}' 로 검색된 코드가 없습니다.", []
 
-    def _read_file(params: dict) -> str:
+    def _read_file(params: dict) -> tuple[str, list[str]]:
         path = (params.get("path") or "").strip()
         start, end = params.get("start_line"), params.get("end_line")
         if not path:
-            return "path 가 비어 있습니다."
+            return "path 가 비어 있습니다.", []
         if not isinstance(start, int) or not isinstance(end, int):
-            return "start_line 과 end_line 을 정수로 지정하세요."
+            return "start_line 과 end_line 을 정수로 지정하세요.", []
         if end < start:
-            return f"end_line({end}) 이 start_line({start}) 보다 작습니다."
+            return f"end_line({end}) 이 start_line({start}) 보다 작습니다.", []
 
         content = source_store.get_file(snapshot_id, path)
         if content is None:
             if not _stored():
-                return NO_SOURCES
+                return NO_SOURCES, []
             return (
                 f"'{path}' 는 보관된 소스에 없습니다."
                 " 경로가 정확한지 확인하거나 grep 으로 찾으세요."
                 " (수집 범위 밖 파일일 수도 있습니다 — 소스가 아닌 확장자, 200KB 초과,"
                 " node_modules 같은 디렉터리는 애초에 수집하지 않습니다.)"
-            )
+            ), []
 
         lines = content.splitlines()
         start = max(1, start)
         if start > len(lines):
-            return f"'{path}' 는 {len(lines)}줄뿐입니다 (요청한 시작 줄 {start})."
+            return f"'{path}' 는 {len(lines)}줄뿐입니다 (요청한 시작 줄 {start}).", []
         chunk = "\n".join(lines[start - 1 : end])
-        return f"### {path} ({start}-{min(end, len(lines))}행)\n{number_lines(chunk, start)}"
+        return (
+            f"### {path} ({start}-{min(end, len(lines))}행)\n{number_lines(chunk, start)}",
+            [],
+        )
 
-    def _grep(params: dict) -> str:
+    def _grep(params: dict) -> tuple[str, list[str]]:
         pattern = (params.get("pattern") or "").strip()
         if not pattern:
-            return "pattern 이 비어 있습니다."
+            return "pattern 이 비어 있습니다.", []
         hits = source_store.grep(snapshot_id, pattern, MAX_GREP_MATCHES + 1)
         if not hits:
             if not _stored():
-                return NO_SOURCES
-            return f"'{pattern}' 이 든 줄이 보관된 소스에 없습니다."
+                return NO_SOURCES, []
+            return f"'{pattern}' 이 든 줄이 보관된 소스에 없습니다.", []
 
         clipped = hits[:MAX_GREP_MATCHES]
         body = "\n".join(f"{h['path']}:{h['line']}: {h['text']}" for h in clipped)
@@ -199,7 +208,8 @@ def build_executor(snapshot_id: int):
                 f"\n\n(일치가 {MAX_GREP_MATCHES}줄을 넘어 여기까지만 보냈습니다."
                 " 검색어를 좁히세요.)"
             )
-        return body
+            return body, ["grep_matches"]
+        return body, []
 
     handlers = {
         "search_code": _search_code,
@@ -208,15 +218,40 @@ def build_executor(snapshot_id: int):
     }
 
     def execute(name: str, params: dict) -> str:
+        params = params or {}
+        entry = {"tool": name, "input": params, "caps": [], "error": False}
+        execute.trace.append(entry)
+
         handler = handlers.get(name)
         if handler is None:
-            return f"'{name}' 은 없는 도구입니다. {', '.join(handlers)} 중에서 고르세요."
-        try:
-            return _truncate(handler(params or {}))
-        except DB_ERRORS as e:
-            # DB 장애는 사람이 읽을 문장으로 바꿔 모델에게 알린다. 여기서 예외를 올리면
-            # 대화 전체가 실패하는데, 다른 도구는 아직 쓸 수 있을지도 모른다.
-            logger.warning("도구 %s 가 DB 오류로 실패했습니다 (스냅샷 %s): %s", name, snapshot_id, e)
-            return f"'{name}' 을 지금 쓸 수 없습니다 (저장소 조회 실패)."
+            output, caps = (
+                f"'{name}' 은 없는 도구입니다. {', '.join(handlers)} 중에서 고르세요.",
+                [],
+            )
+            entry["error"] = True
+        else:
+            try:
+                output, caps = handler(params)
+            except DB_ERRORS as e:
+                # DB 장애는 사람이 읽을 문장으로 바꿔 모델에게 알린다. 여기서 예외를
+                # 올리면 대화 전체가 실패하는데, 다른 도구는 아직 쓸 수 있을지도 모른다.
+                logger.warning(
+                    "도구 %s 가 DB 오류로 실패했습니다 (스냅샷 %s): %s", name, snapshot_id, e
+                )
+                output, caps = f"'{name}' 을 지금 쓸 수 없습니다 (저장소 조회 실패).", []
+                entry["error"] = True
 
+        output, tokens, cut = _truncate(output)
+        entry["result_chars"] = len(output)
+        entry["result_tokens"] = tokens
+        entry["caps"] = [*caps, *(["result_tokens"] if cut else [])]
+        return output
+
+    # **도구 호출 내역을 남긴다.** 비용 산식의 a·r 은 아직 추정치(150·1,500) 위에 서
+    # 있는데, 그 가정을 실측으로 대체하려면 "어떤 도구를 어떤 인자로 불러 결과가 몇
+    # 토큰이었나"가 필요하다. 답변 원문만으로는 재계산할 수 없다.
+    #
+    # 프로덕션은 이 목록을 읽지 않는다(대화 하나가 끝나면 실행기와 함께 사라진다).
+    # 읽는 것은 평가 하네스뿐이고, 거기서 jsonl 에 실린다.
+    execute.trace = []
     return execute

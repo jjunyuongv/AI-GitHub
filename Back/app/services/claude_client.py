@@ -369,12 +369,17 @@ def _call_loop(
     }
     messages = list(messages)
     round_trips, capped, text = 0, False, ""
+    # 호출별 사용량. 비용 산식의 aᵢ 가 실제로 얼마인지는 이것으로만 알 수 있다 —
+    # 지금 산식은 추정치(150) 위에 서 있고, 합계만 남기면 그 가정을 못 검증한다.
+    per_call: list[dict] = []
+    trace = getattr(execute, "trace", None)
 
     while True:
         response, result = _raw_call(
             model=model, effort=effort, system=system, messages=messages, tools=tools
         )
         _merge(totals, result)
+        per_call.append({**result, "stop_reason": response.stop_reason})
         text = _text_of(response.content)
 
         calls = [block for block in response.content if block.type == "tool_use"]
@@ -393,6 +398,7 @@ def _call_loop(
         # **결과는 한 user 메시지에 모아 보낸다.** 나눠 보내면 모델이 병렬 호출을
         # 그만두게 학습된다. 실패한 도구도 빠뜨리지 않고 is_error 로 돌려준다.
         content: list[dict] = []
+        traced_from = len(trace) if trace is not None else 0
         for call in calls:
             try:
                 output = execute(call.name, call.input)
@@ -406,6 +412,12 @@ def _call_loop(
                 "content": output,
                 "is_error": is_error,
             })
+        # 실행기가 남긴 이번 라운드의 항목에 라운드 번호를 찍는다. 실행기가 내역을
+        # 안 남기면(테스트 대역 등) 조용히 건너뛴다 — 루프가 그것에 기대지 않는다.
+        if trace is not None:
+            for entry in trace[traced_from:]:
+                entry["round"] = round_trips
+
         if round_trips >= MAX_TOOL_ROUND_TRIPS:
             content.append({"type": "text", "text": ROUND_TRIP_CAP_NOTICE})
             capped = True
@@ -423,6 +435,11 @@ def _call_loop(
         ),
         "round_trips": round_trips,
         "hit_round_trip_cap": capped,
+        # 아래 둘은 **측정용**이다. 프로덕션은 round_trips 만 runs 에 남기고 이것들은
+        # 버린다 — 답변 원문만으로는 비용 산식의 aᵢ·rᵢ 를 사후에 되살릴 수 없어서,
+        # 하네스가 jsonl 에 실어 다음 설계의 입력으로 쓴다.
+        "calls": per_call,
+        "tool_trace": list(trace) if trace is not None else [],
     }
 
 
