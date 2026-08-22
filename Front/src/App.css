@@ -558,6 +558,125 @@ main {
   background: none;
 }
 
+/* ── 근거(인용) ─────────────────────────────────────────────
+ *
+ * **틀린 행 번호를 감추지 않는 것이 이 화면의 목적이다.** 실측 정확도가 72.4% 라
+ * 넷 중 하나는 엉뚱한 줄을 짚는다. 그래서 인용 범위는 배경색으로만 표시하고
+ * 앞뒤 여유 줄은 **또렷하게 읽히도록 둔다** — 흐리게 하면 어긋났을 때 실제 위치를
+ * 찾을 수가 없다. */
+
+/* 답변 본문 안의 인용 표기. 글 흐름을 끊지 않게 밑줄만 준다. */
+button.citation {
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  background: none;
+  border: none;
+  border-bottom: 1px dashed var(--accent);
+  cursor: pointer;
+}
+
+button.citation:hover,
+button.citation.open {
+  border-bottom-style: solid;
+  background: rgba(88, 166, 255, 0.12);
+}
+
+/* 답변 아래 근거 목록. 인라인 링크를 못 걸어도 여기에는 남는다. */
+.citation-list {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-muted);
+}
+
+.citation-list-head {
+  margin: 0 0 6px;
+  font-size: 0.8rem;
+  color: var(--fg-muted);
+}
+
+button.citation-item {
+  display: block;
+  width: 100%;
+  padding: 4px 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8rem;
+  color: var(--fg);
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+button.citation-item:hover {
+  color: var(--accent);
+}
+
+button.citation-item .lines {
+  color: var(--fg-muted);
+}
+
+.citation-code {
+  margin: 6px 0 12px;
+}
+
+.citation-head {
+  margin: 0 0 6px;
+  font-size: 0.8rem;
+  color: var(--fg-muted);
+}
+
+.citation-head .cited {
+  color: var(--accent);
+}
+
+.citation-code pre {
+  margin: 0;
+  padding: 12px 0;
+  overflow-x: auto;
+  background: var(--canvas-inset);
+  border: 1px solid var(--border-muted);
+  border-radius: 6px;
+}
+
+.citation-code code {
+  display: block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.6;
+}
+
+.citation-code .line {
+  display: block;
+  padding: 0 12px;
+  /* 여유 줄도 본문과 같은 색이다. 흐리게 하지 않는다. */
+  color: var(--fg);
+  white-space: pre;
+}
+
+/* 인용이 가리킨 범위. **배경만 바꾼다** — 나머지 줄을 죽이지 않는다. */
+.citation-code .line.cited {
+  background: rgba(88, 166, 255, 0.14);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* 인용이 파일 밖을 가리킨 경우. 빈 화면 대신 그 사실을 적는다. */
+.citation-missing {
+  margin: 0;
+  padding: 12px;
+  font-size: 0.85rem;
+  color: var(--danger);
+  background: var(--canvas-inset);
+  border: 1px solid var(--border-muted);
+  border-radius: 6px;
+}
+
+.citation-note {
+  margin: 6px 0 0;
+  font-size: 0.78rem;
+  color: var(--fg-muted);
+}
+
 .chat form {
   display: flex;
   gap: 8px;

@@ -3,10 +3,14 @@ import ReactMarkdown from "react-markdown";
 import {
   API_BASE,
   errorMessage,
+  fetchFileView,
   fetchIndexStatus,
   type ChatMessage,
+  type Citation,
+  type FileView,
   type IndexStatus,
 } from "./api";
+import { CITATION_ATTR, rehypeCitations } from "./citations";
 
 type Props = {
   sessionId: string;
@@ -72,6 +76,64 @@ function IndexNotice({ status }: { status: IndexStatus }) {
   );
 }
 
+/** 인용이 가리킨 코드. **틀린 행 번호를 감추지 않는 것이 이 컴포넌트의 목적이다.**
+ *
+ * 실측 행 번호 정확도가 72.4% 라 넷 중 하나는 엉뚱한 줄을 짚는다. 그래서
+ * - 인용 범위는 배경색으로만 표시하고 **여유 줄도 또렷하게 읽히게** 둔다(흐리게 하지 않는다).
+ *   그래야 번호가 어긋났을 때 사용자가 근처에서 실제 위치를 찾을 수 있다
+ * - 파일 밖을 가리킨 인용은 **빈 화면이 아니라 그 사실을 적는다**
+ */
+function CodeView({ view }: { view: FileView }) {
+  const lines = view.numbered ? view.numbered.split("\n") : [];
+
+  return (
+    <div className="citation-code">
+      <p className="citation-head">
+        <code>{view.path}</code>{" "}
+        <span className="cited">
+          {view.requested_start}-{view.requested_end}행
+        </span>{" "}
+        <span className="shown">
+          (전체 {view.total_lines.toLocaleString()}행
+          {lines.length ? ` · ${view.start_line}-${view.end_line}행 표시` : ""})
+        </span>
+      </p>
+
+      {lines.length === 0 ? (
+        <p className="citation-missing">
+          답변은 {view.requested_start}-{view.requested_end}행이라고 했지만 이 파일은{" "}
+          {view.total_lines.toLocaleString()}행뿐입니다.
+        </p>
+      ) : (
+        <pre>
+          <code>
+            {lines.map((line, i) => {
+              const number = Number(line.slice(0, line.indexOf("|")));
+              const cited =
+                number >= view.requested_start && number <= view.requested_end;
+              return (
+                <span key={i} className={cited ? "line cited" : "line"}>
+                  {line}
+                  {"\n"}
+                </span>
+              );
+            })}
+          </code>
+        </pre>
+      )}
+
+      {view.truncated && (
+        <p className="citation-note">범위가 길어 앞부분만 보여줍니다.</p>
+      )}
+    </div>
+  );
+}
+
+type OpenState = Record<string, FileView | "loading" | { error: string }>;
+
+// 인라인 링크를 못 건 누적 건수. 렌더마다 초기화되면 빈도를 알 수 없어서 모듈에 둔다.
+let missCount = 0;
+
 export default function ChatPanel({ sessionId, initialMessages }: Props) {
   const [messages, setMessages] = useState(initialMessages);
   const [question, setQuestion] = useState("");
@@ -80,6 +142,14 @@ export default function ChatPanel({ sessionId, initialMessages }: Props) {
   const [pending, setPending] = useState("");
   const [error, setError] = useState("");
   const [index, setIndex] = useState<IndexStatus | null>(null);
+  // 펼쳐 둔 인용. 키는 `메시지번호:인용번호` 다.
+  //
+  // **여러 개를 동시에 펼친다.** 하나만 열게 하면 A 를 열고 B 를 여는 순간 A 가 닫히는데,
+  // 이 기능의 목적이 "행 번호가 맞는지 대조"라 대조 자체가 불가능해진다.
+  //
+  // **새 질문을 보내도 유지된다.** 메시지는 뒤에 붙기만 하므로 기존 블록의 번호가
+  // 안 바뀐다 — 닫으면 방금 대조하려고 연 근거가 사라진다.
+  const [opened, setOpened] = useState<OpenState>({});
 
   const endRef = useRef<HTMLDivElement>(null);
   const firstRender = useRef(true);
@@ -149,6 +219,27 @@ export default function ChatPanel({ sessionId, initialMessages }: Props) {
     }
   }
 
+  async function toggleCitation(key: string, cite: Citation) {
+    if (opened[key]) {
+      setOpened((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+      return;
+    }
+    setOpened((prev) => ({ ...prev, [key]: "loading" }));
+    try {
+      const view = await fetchFileView(sessionId, cite);
+      setOpened((prev) => ({ ...prev, [key]: view }));
+    } catch (err) {
+      setOpened((prev) => ({
+        ...prev,
+        [key]: { error: err instanceof Error ? err.message : "파일을 열지 못했습니다" },
+      }));
+    }
+  }
+
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -166,17 +257,85 @@ export default function ChatPanel({ sessionId, initialMessages }: Props) {
         <p className="chat-empty">요약에서 더 알고 싶은 부분을 물어보세요.</p>
       )}
 
-      {messages.map((m, i) => (
-        <div key={i} className={`msg ${m.role}`}>
-          {m.role === "user" ? (
-            m.content
-          ) : (
+      {messages.map((m, i) => {
+        if (m.role === "user") {
+          return <div key={i} className="msg user">{m.content}</div>;
+        }
+
+        const cites = m.citations ?? [];
+        // 인라인 링크를 못 건 인용. 아래 목록에는 그대로 남으므로 근거를 못 보게 되지는
+        // 않는다. 빈도를 알아야 나중에 고칠지 정할 수 있어서 콘솔에 남긴다
+        // (렌더 중에 불리므로 JSX 안이 아니라 콜백에서 남긴다).
+        const plugin = rehypeCitations(cites, (c) => {
+          missCount += 1;
+          console.warn(
+            `[citations] 인라인 링크 실패 ${missCount}건째 — 답변에서 "${c.marker}" 를 찾지 못했습니다`,
+            c,
+          );
+        });
+
+        return (
+          <div key={i} className="msg assistant">
             <div className="markdown">
-              <ReactMarkdown>{m.content}</ReactMarkdown>
+              <ReactMarkdown
+                rehypePlugins={[plugin]}
+                components={{
+                  span(props) {
+                    const { node, children, ...rest } = props;
+                    const raw = node?.properties?.[CITATION_ATTR];
+                    if (typeof raw !== "string") return <span {...rest}>{children}</span>;
+                    const cite: Citation = JSON.parse(raw);
+                    const key = `${i}:${cite.offset}`;
+                    return (
+                      <button
+                        type="button"
+                        className={`citation${opened[key] ? " open" : ""}`}
+                        onClick={() => toggleCitation(key, cite)}
+                        title={`${cite.path} ${cite.start_line}-${cite.end_line}행 열기`}
+                      >
+                        {children}
+                      </button>
+                    );
+                  },
+                }}
+              >
+                {m.content}
+              </ReactMarkdown>
             </div>
-          )}
-        </div>
-      ))}
+
+            {cites.length > 0 && (
+              <div className="citation-list">
+                <p className="citation-list-head">근거</p>
+                {cites.map((cite) => {
+                  const key = `${i}:${cite.offset}`;
+                  const state = opened[key];
+                  return (
+                    <div key={key}>
+                      <button
+                        type="button"
+                        className={`citation-item${state ? " open" : ""}`}
+                        onClick={() => toggleCitation(key, cite)}
+                      >
+                        {state ? "▾" : "▸"} {cite.path}{" "}
+                        <span className="lines">
+                          {cite.start_line}-{cite.end_line}행
+                        </span>
+                      </button>
+                      {state === "loading" && <p className="citation-note">여는 중…</p>}
+                      {state && typeof state === "object" && "error" in state && (
+                        <p className="error">{state.error}</p>
+                      )}
+                      {state && typeof state === "object" && "numbered" in state && (
+                        <CodeView view={state} />
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })}
 
       {pending && (
         <>

@@ -2,7 +2,61 @@
 
 export const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
 
-export type ChatMessage = { role: "user" | "assistant"; content: string };
+/** 답변이 짚은 근거 한 건.
+ *
+ * **행 번호는 검증되지 않은 값이다** — 실측 정확도가 72.4% 다. 서버도 화면도 맞았는지
+ * 판정하지 않는다. 틀린 것을 감추면 고칠 수가 없다.
+ *
+ * `offset` 은 답변 문자열 안에서 `marker` 가 시작하는 위치다. 마크다운 렌더러가 줄 앞뒤
+ * 공백을 지워서 offset 산술만으로는 어긋나므로, offset 으로 **노드를 고르고**
+ * `marker` 로 **노드 안 위치를 정한다** (`citations.ts`).
+ */
+export type Citation = {
+  path: string;
+  start_line: number;
+  end_line: number;
+  marker: string;
+  offset: number;
+};
+
+export type ChatMessage = {
+  role: "user" | "assistant";
+  content: string;
+  /** 사용자 메시지에는 없다. 보관 소스가 없는 스냅샷에서도 빈 배열이다. */
+  citations?: Citation[];
+};
+
+/** 인용이 가리킨 파일 조각. 요청 범위와 실제 반환 범위를 둘 다 준다. */
+export type FileView = {
+  path: string;
+  /** 실제로 담긴 범위 (앞뒤 여유가 붙어 있다). */
+  start_line: number;
+  end_line: number;
+  /** 인용이 요청한 범위. 파일 밖을 가리켰어도 그대로 온다. */
+  requested_start: number;
+  requested_end: number;
+  total_lines: number;
+  truncated: boolean;
+  /** `12|코드` 형식. 도구의 read_file 과 같은 형식이다. */
+  numbered: string;
+};
+
+export async function fetchFileView(
+  sessionId: string,
+  cite: Citation,
+): Promise<FileView> {
+  const params = new URLSearchParams({
+    path: cite.path,
+    start: String(cite.start_line),
+    end: String(cite.end_line),
+  });
+  const res = await fetch(`${API_BASE}/chat/${sessionId}/file?${params}`);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(errorMessage(body.detail, res.status, "파일을 열지 못했습니다"));
+  }
+  return res.json();
+}
 
 /** 코드 색인 진행 상황. completed 가 되기 전에는 답변에 코드가 쓰이지 않는다. */
 export type IndexStatus = {
