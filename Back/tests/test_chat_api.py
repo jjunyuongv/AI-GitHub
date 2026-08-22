@@ -109,12 +109,14 @@ def captured_call(monkeypatch):
     calls = []
 
     def fake_run_chat(
-        *, context, summary, history, question, snippets="", source_bundle=""
+        *, context, summary, history, question, snippets="", source_bundle="",
+        tools=None, execute=None,
     ):
         calls.append({
             "context": context, "summary": summary, "history": history,
             "question": question, "snippets": snippets,
             "source_bundle": source_bundle,
+            "tools": tools, "execute": execute,
         })
         return {
             "text": "가짜 답변",
@@ -124,6 +126,7 @@ def captured_call(monkeypatch):
             "cache_write_tokens": 0,
             "cache_read_tokens": 900,
             "cost_usd": 0.0007,
+            "round_trips": 2,
         }
 
     monkeypatch.setattr(chat_api, "run_chat", fake_run_chat)
@@ -170,33 +173,51 @@ def test_answer_is_returned_and_saved(client, fake_chats, captured_call):
     ]
 
 
-def test_code_is_searched_before_answering(
+def test_tools_are_attached_and_snippets_are_not_preinjected(
     client, fake_chats, captured_call, fake_indexer, monkeypatch
 ):
-    """대화가 '추정'이 아니라 실제 코드로 답하려면, 검색이 LLM 호출 전에 끝나 있어야 한다."""
-    monkeypatch.setattr(fake_indexer, "snippets", "## 질문과 관련된 코드\n```java\n@Bean\n```")
+    """**검색을 미리 돌리지 않는다.** 모델이 필요할 때 search_code 를 부른다.
+
+    사전 주입한 스니펫은 캐시 브레이크포인트 뒤라 라운드트립마다 정가로 되풀이
+    청구된다 — 실측 산식으로 3회에 3.78배가 되어 판정 기준 C(3배)를 넘는다.
+    """
+    monkeypatch.setattr(fake_indexer, "snippets", "미리 넣으면 안 되는 코드")
 
     _ask(client, "로그인 관련 부분은 어디에 있어?")
 
-    assert fake_indexer.searched == ["로그인 관련 부분은 어디에 있어?"]
-    assert "@Bean" in captured_call[0]["snippets"]
+    assert captured_call[0]["snippets"] == ""
+    assert fake_indexer.searched == []          # LLM 이 부르기 전에는 검색하지 않는다
+    assert captured_call[0]["tools"] == chat_api.tools.TOOL_SCHEMAS
+    assert callable(captured_call[0]["execute"])
 
 
-def test_unfinished_index_is_not_searched(
+def test_full_injection_snapshot_gets_no_tools(client, fake_chats, captured_call):
+    """소스가 이미 접두사에 다 들어간 스냅샷은 도구를 부를 이유가 없다.
+
+    이 경로는 기준선의 `full` 팔과 같은 모양이어야 측정이 성립한다.
+    """
+    fake_chats.session = {**SESSION, "source_bundle": "## 저장소 전체 소스\n### a.py"}
+
+    _ask(client)
+
+    assert captured_call[0]["tools"] is None
+    assert captured_call[0]["source_bundle"].startswith("## 저장소 전체 소스")
+
+
+def test_unfinished_index_gets_no_tools(
     client, fake_chats, captured_call, fake_indexer, monkeypatch
 ):
-    """색인이 끝나기 전에는 검색하지 않는다.
+    """색인이 끝나기 전에는 도구를 주지 않는다.
 
     부분 인덱스로 검색하면 아직 임베딩하지 않은 코드가 '저장소에 없는 코드'처럼 보여
     틀린 답을 만든다. 대신 그 자리에서 색인을 시작시킨다(세션만 복원해 들어온 경우).
     """
     monkeypatch.setattr(fake_indexer, "ready", False)
-    monkeypatch.setattr(fake_indexer, "snippets", "쓰이면 안 되는 코드")
 
     res = _ask(client)
 
     assert res.status_code == 200
-    assert fake_indexer.searched == []
+    assert captured_call[0]["tools"] is None
     assert captured_call[0]["snippets"] == ""
     # 색인은 세션이 보는 스냅샷과 정규화된 owner/name 으로 시작돼야 한다
     assert fake_indexer.started == [(1, "react", "react")]
@@ -226,7 +247,8 @@ def test_indexing_failure_does_not_block_the_answer(
 
     assert res.status_code == 200
     assert res.json()["answer"] == "가짜 답변"
-    # 코드 없이도 답은 나가야 하고, 그 경우 스니펫은 비어 있어야 한다
+    # 코드 없이도 답은 나가야 하고, 그 경우 도구는 붙지 않는다
+    assert captured_call[0]["tools"] is None
     assert captured_call[0]["snippets"] == ""
 
 

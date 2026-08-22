@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from app.db import chats, index_status
 from app.db.pool import DB_ERRORS
 from app.schemas.schemas import ChatHistory, ChatRequest, ChatResponse, IndexStatus
-from app.services import indexer, rate_limit, run_log
+from app.services import indexer, rate_limit, run_log, tools
 from app.services.claude_client import (
     CHAT_SYSTEM_PROMPT,
     DEFAULT_EFFORT,
@@ -73,29 +73,32 @@ def chat(req: ChatRequest, request: Request):
     except DB_ERRORS:
         raise HTTPException(status_code=503, detail=DB_UNAVAILABLE)
 
-    # 인덱싱이 **끝났을 때만** 코드를 검색한다. 진행 중인 인덱스로 검색하면 아직
-    # 임베딩하지 않은 코드가 '저장소에 없는 코드'처럼 보여 틀린 답을 만든다.
-    # 아직이면 요약만으로 답하고, 화면은 GET /chat/{id}/index 로 진행 상황을 보여준다.
+    # **검색을 미리 돌리지 않는다.** 예전에는 질문마다 한 번 검색해 그 결과를 마지막
+    # 사용자 메시지에 넣었는데, 그 자리는 캐시 브레이크포인트 뒤라 도구 루프가 생기면
+    # 라운드트립마다 정가로 되풀이 청구된다 (실측 산식으로 3회에 3.78배, 판정 기준 C 초과).
+    # 이제 모델이 필요할 때 search_code 를 부른다.
     #
-    # 실패해도 진행한다 — 코드 근거 없이 답하는 쪽이 질문을 막는 것보다 낫다.
+    # 전체 주입 스냅샷(작은 저장소)은 소스가 이미 접두사에 다 들어가 있으므로 도구를
+    # 붙이지 않는다 — 부를 이유가 없고, 도구 목록이 갈리는 문제도 여기서는 생기지 않는다.
+    # 두 경로는 스냅샷 속성으로 갈리고 한 대화 안에서는 바뀌지 않는다.
     #
-    # 전체 주입 스냅샷(작은 저장소)은 검색하지 않는다 — 소스가 이미 전부 들어가 있어서
-    # 검색해 봐야 그 일부를 두 번 보내는 셈이고, 스니펫은 캐시 뒤라 매 질문 정가다.
+    # 인덱싱이 **끝났을 때만** 도구를 준다. 진행 중인 인덱스로 검색하면 아직 임베딩하지
+    # 않은 코드가 '저장소에 없는 코드'처럼 보여 틀린 답을 만든다. 아직이면 요약만으로
+    # 답하고, 화면은 GET /chat/{id}/index 로 진행 상황을 보여준다.
     source_bundle = session.get("source_bundle") or ""
+    tool_schemas, execute = None, None
     try:
-        if source_bundle:
-            snippets = ""
-        elif indexer.is_ready(session["snapshot_id"]):
-            snippets = indexer.format_snippets(
-                indexer.search_code(session["snapshot_id"], question)
-            )
-        else:
-            # 세션만 복원해 들어온 경우(/analyze 를 거치지 않음) 여기서 시작시킨다.
-            indexer.start(session["snapshot_id"], session["owner"], session["name"])
-            snippets = ""
+        if not source_bundle:
+            if indexer.is_ready(session["snapshot_id"]):
+                tool_schemas = tools.TOOL_SCHEMAS
+                execute = tools.build_executor(session["snapshot_id"])
+            else:
+                # 세션만 복원해 들어온 경우(/analyze 를 거치지 않음) 여기서 시작시킨다.
+                indexer.start(session["snapshot_id"], session["owner"], session["name"])
     except Exception as e:
-        logger.warning("코드 검색을 건너뜁니다 (%s): %s", req.session_id, e)
-        snippets = ""
+        # 실패해도 진행한다 — 코드 근거 없이 답하는 쪽이 질문을 막는 것보다 낫다.
+        logger.warning("도구를 붙이지 못했습니다 (%s): %s", req.session_id, e)
+        tool_schemas, execute = None, None
     fetch_ms = int((time.perf_counter() - started) * 1000)
 
     try:
@@ -104,8 +107,9 @@ def chat(req: ChatRequest, request: Request):
             summary=session["summary"],
             history=history,
             question=question,
-            snippets=snippets,
             source_bundle=source_bundle,
+            tools=tool_schemas,
+            execute=execute,
         )
     except MissingAPIKeyError as e:
         raise HTTPException(status_code=503, detail=str(e))

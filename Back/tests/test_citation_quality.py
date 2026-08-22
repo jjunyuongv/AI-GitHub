@@ -61,7 +61,7 @@ from app.core.chunk_rule import rule_version
 from app.core.chunker import chunk_files
 from app.db import chunks as chunk_store
 from app.db import index_status, pool
-from app.services import claude_client
+from app.services import claude_client, tools
 from app.services.indexer import format_snippets, measure_bundle, search_code
 from tests.search_eval_dataset import (
     ABSENT_SET_VERSION,
@@ -89,7 +89,7 @@ SET_SUMMARIES = {
     "apns4j": "APNs 푸시 알림을 보내는 Java 라이브러리입니다.",
 }
 
-ARM_LABELS = {"rag": "RAG", "full": "전체주입"}
+ARM_LABELS = {"rag": "RAG", "full": "전체주입", "tool": "도구"}
 
 # 대화 이력 없이 질의 하나씩 독립으로 묻는다 — 앞 질문의 답이 다음 답에 섞이면
 # 두 경로의 차이가 아니라 대화 순서의 차이를 재게 된다.
@@ -126,6 +126,11 @@ REFUSAL_SCOPES = (
     r"(?:주어진|제공된)\s*(?:정보|코드|저장소|소스)",
     r"(?:저장소\s*)?전체\s*소스",  # 전체 주입 팔이 쓰는 계열
     r"코드\s*전체",
+    # tool use 팔이 쓰는 계열. 도구를 직접 부르는 경로에서는 "검색된 범위" 대신
+    # **자기가 한 행동**으로 스코프를 말한다 — "읽어 본 파일에는", "확인한 파일 중에는",
+    # "grep 으로 찾아봤지만". 이 계열이 없으면 tool use 가 **정직하게 답해도** 거절 축이
+    # 내려가고, 판정 기준 B 가 그것을 품질 하락으로 읽어 틀리게 기각한다.
+    r"(?:읽어|열어|확인해|찾아|살펴)\s*본",
 )
 
 # (나) 거기에 없다. 부정 술어.
@@ -214,7 +219,10 @@ def _ensure_index(snapshot_id: int, repo: tuple[str, str], files: dict) -> None:
     index_status.prune_builds(snapshot_id, table=config.CHUNK_TABLE)
 
 
-def _ask(context: str, summary: str, case: dict, *, snippets: str, bundle: str) -> dict:
+def _ask(
+    context: str, summary: str, case: dict, *,
+    snippets: str, bundle: str, tools=None, execute=None,
+) -> dict:
     result = claude_client.run_chat(
         context=context,
         summary=summary,
@@ -222,6 +230,8 @@ def _ask(context: str, summary: str, case: dict, *, snippets: str, bundle: str) 
         question=case["query"],
         snippets=snippets,
         source_bundle=bundle,
+        tools=tools,
+        execute=execute,
     )
     return {
         "id": case["id"],
@@ -236,6 +246,9 @@ def _ask(context: str, summary: str, case: dict, *, snippets: str, bundle: str) 
         "cache_write_tokens": result["cache_write_tokens"],
         "cache_read_tokens": result["cache_read_tokens"],
         "cost_usd": result["cost_usd"] or 0.0,
+        # 비용 모델이 이 값 위에 서 있다. 도구를 안 쓴 팔은 0 이다.
+        "round_trips": result.get("round_trips", 0),
+        "hit_round_trip_cap": result.get("hit_round_trip_cap", False),
     }
 
 
@@ -262,6 +275,10 @@ def _summarize(rows: list[dict]) -> dict:
         "avg_llm_ms": round(sum(r["llm_ms"] for r in rows) / len(rows)),
         "cache_write_tokens": sum(r["cache_write_tokens"] for r in rows),
         "cache_read_tokens": sum(r["cache_read_tokens"] for r in rows),
+        # 라운드트립 분포가 비용 모델의 입력이다. 평균만으로는 캡에 닿은 질의가
+        # 몇 건인지 안 보여서 함께 센다.
+        "avg_round_trips": round(sum(r["round_trips"] for r in rows) / len(rows), 2),
+        "capped": sum(1 for r in rows if r["hit_round_trip_cap"]),
     }
 
 
@@ -271,11 +288,15 @@ def _arms_for(tokens: int) -> tuple[str, ...]:
     **저장소 이름으로 가르지 않는다**(CLAUDE.md §7). 프로덕션이 우회를 판정할 때 쓰는
     바로 그 기준(번들 토큰 수 ≤ 임계값)을 그대로 쓴다 — 하네스와 서비스의 기준이
     갈리면 "여기서는 성립하는데 서비스에서는 안 켜지는" 비교를 하게 된다.
-    임계값을 넘는 저장소에서 전체 주입은 아예 성립하지 않으므로 RAG 한 팔만 돈다.
+    임계값을 넘는 저장소에서 전체 주입은 아예 성립하지 않으므로 그 팔만 빠진다.
+
+    `tool` 은 어디서나 성립한다 — 검색 색인만 있으면 된다. `rag` 는 그대로 두어야
+    한다: 프롬프트가 바뀌어 옛 기준선이 무효가 됐으므로 **같은 실행에서 다시 재야**
+    tool 팔과 비교가 성립한다.
     """
     if tokens and tokens <= config.FULL_INJECTION_MAX_TOKENS:
-        return ("rag", "full")
-    return ("rag",)
+        return ("rag", "full", "tool")
+    return ("rag", "tool")
 
 
 @pytest.mark.parametrize("set_name", list(EVAL_SETS))
@@ -317,6 +338,10 @@ def test_measure_answer_quality(set_name, capsys):
                     context, summary, case,
                     snippets=snippets,
                     bundle=bundle if arm == "full" else "",
+                    tools=tools.TOOL_SCHEMAS if arm == "tool" else None,
+                    # 프로덕션과 **같은 실행기**를 쓴다. 하네스가 자기 대역을 쓰면
+                    # 서비스가 아니라 하네스를 재게 된다.
+                    execute=tools.build_executor(snapshot_id) if arm == "tool" else None,
                 )
             )
         results[arm] = rows
@@ -369,8 +394,16 @@ def _print_report(set_name, repo, cases, arms, results, totals,
         ("비용(USD)", "cost_usd"),
         ("질문당 비용", "avg_cost_usd"),
         ("질문당 지연(ms)", "avg_llm_ms"),
+        ("질문당 도구호출", "avg_round_trips"),
+        ("한도에 닿음", "capped"),
     ):
         print(f"{label:<16}" + "".join(f"{totals[a][key]:>12}" for a in arms))
+
+    # 판정 기준 C 는 **기준선 대비 배수**로 정해져 있다. 눈으로 나누게 두면 틀린다.
+    base = totals["rag"]["avg_cost_usd"]
+    if base:
+        ratios = "".join(f"{totals[a]['avg_cost_usd'] / base:>11.2f}배" for a in arms)
+        print(f"{'RAG 대비 배수':<16}{ratios}   (기준 C: {COST_RATIO_LIMIT}배)")
 
     print("\n" + f"{'id':<10} {'종류':<11}" + "".join(f"{lb:>7}" for lb in labels) + "  질의")
     by_id = {arm: {r["id"]: r for r in rows} for arm, rows in results.items()}
@@ -386,13 +419,29 @@ def _print_report(set_name, repo, cases, arms, results, totals,
                 note = f"  ← {'·'.join(won)} 우세"
         print(f"{case['id']:<10} {case['kind']:<11}{marks}  {case['query']}{note}")
 
-    if len(arms) > 1:
-        rag, full = totals["rag"], totals["full"]
-        verdict = (
-            "전체 주입을 켠다" if full["citation_accuracy"] > rag["citation_accuracy"]
-            else "RAG 를 유지한다"
-        )
-        print(f"\n판정: {verdict} (기준: 올라야만 켠다. 동률·하락이면 유지)")
-    else:
-        print("\n이 저장소는 전체 주입 임계값을 넘어 우회 비교가 성립하지 않는다 "
-              "— RAG 한 팔의 기준선만 남긴다.")
+    # 판정은 사람이 한다. 여기서는 **기준을 적용한 결과만** 보여준다 —
+    # 눈으로 표를 읽고 정하면 사후 합리화가 된다.
+    rag = totals["rag"]
+    print("\n판정 (기준은 측정 전에 고정돼 있다. A→B→C 순서로 본다):")
+    for arm in arms:
+        if arm == "rag":
+            continue
+        this = totals[arm]
+        if this["citation_accuracy"] < rag["citation_accuracy"]:
+            verdict = "기각 — 인용 정확도가 떨어졌다 (기준 A)"
+        elif this["citation_accuracy"] == rag["citation_accuracy"]:
+            verdict = (
+                "기각 — 동률인데 거절 정확도도 떨어졌다 (기준 B)"
+                if this["refusal_accuracy"] < rag["refusal_accuracy"]
+                else "동률 — RAG 유지 (올라야만 켠다)"
+            )
+        elif rag["avg_cost_usd"] and (
+            this["avg_cost_usd"] / rag["avg_cost_usd"] > COST_RATIO_LIMIT
+        ):
+            verdict = f"품질은 올랐으나 비용이 {COST_RATIO_LIMIT}배를 넘었다 — 전면 도입하지 않는다 (기준 C)"
+        else:
+            verdict = "켠다 — 인용이 오르고 비용이 상한 안이다"
+        print(f"  {ARM_LABELS[arm]:<6} {verdict}")
+
+    if "full" not in arms:
+        print("  (이 저장소는 전체 주입 임계값을 넘어 그 팔이 성립하지 않는다)")

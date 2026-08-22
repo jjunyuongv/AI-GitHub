@@ -1,9 +1,18 @@
-"""대화 메시지 조립. LLM 을 실제로 부르지 않는다 (토큰 절약)."""
+"""대화 메시지 조립과 도구 루프. LLM 을 실제로 부르지 않는다 (토큰 절약).
 
+루프는 SDK 응답을 대역으로 갈아끼워 돈다 — 네트워크도 API 키도 필요 없다.
+"""
+
+from types import SimpleNamespace
+
+import pytest
+
+from app.services import claude_client
 from app.services.claude_client import (
     CHAT_SYSTEM_PROMPT,
     MAX_HISTORY_MESSAGES,
     REFUSAL_PHRASES,
+    billable_tokens,
     build_chat_messages,
 )
 
@@ -161,3 +170,274 @@ def test_extra_message_fields_are_not_forwarded():
     messages = build_chat_messages(CONTEXT, SUMMARY, history, "새 질문")
 
     assert messages[2] == {"role": "user", "content": "질문"}
+
+
+# ── 도구 루프 ────────────────────────────────────────────────
+#
+# SDK 응답을 대역으로 만든다. 실제 호출은 하지 않으므로 무과금이고 API 키도 필요 없다.
+
+
+def _text(value: str):
+    return SimpleNamespace(type="text", text=value)
+
+
+def _use(tool_id: str, name: str, params: dict):
+    return SimpleNamespace(type="tool_use", id=tool_id, name=name, input=params)
+
+
+def _reply(blocks, stop_reason, tokens=10):
+    return SimpleNamespace(
+        content=blocks,
+        stop_reason=stop_reason,
+        usage=SimpleNamespace(
+            input_tokens=tokens,
+            output_tokens=tokens,
+            cache_creation_input_tokens=tokens,
+            cache_read_input_tokens=tokens,
+        ),
+    )
+
+
+@pytest.fixture
+def fake_api(monkeypatch):
+    """정해진 응답을 차례로 내주는 SDK 대역. 보낸 params 를 전부 기록한다."""
+    def install(replies):
+        sent = []
+
+        def fake_raw(*, model, effort, system, messages, tools=None):
+            sent.append({"messages": [*messages], "tools": tools, "system": system})
+            reply = replies[len(sent) - 1]
+            return reply, {
+                "llm_ms": 100,
+                "input_tokens": reply.usage.input_tokens,
+                "output_tokens": reply.usage.output_tokens,
+                "cache_write_tokens": reply.usage.cache_creation_input_tokens,
+                "cache_read_tokens": reply.usage.cache_read_input_tokens,
+            }
+
+        monkeypatch.setattr(claude_client, "_raw_call", fake_raw)
+        return sent
+
+    return install
+
+
+TOOLS = [{"name": "search_code", "input_schema": {}}]
+
+
+def _run(execute=None, **kw):
+    return claude_client._call_loop(
+        model="claude-sonnet-5",
+        effort="medium",
+        system=CHAT_SYSTEM_PROMPT,
+        messages=build_chat_messages(CONTEXT, SUMMARY, [], "질문"),
+        tools=TOOLS,
+        execute=execute or (lambda name, params: "도구 결과"),
+        **kw,
+    )
+
+
+def test_loop_runs_tool_then_answers(fake_api):
+    sent = fake_api([
+        _reply([_use("t1", "search_code", {"query": "인증"})], "tool_use"),
+        _reply([_text("인증은 SecurityConfig 에 있습니다.")], "end_turn"),
+    ])
+
+    result = _run()
+
+    assert result["text"] == "인증은 SecurityConfig 에 있습니다."
+    assert result["round_trips"] == 1
+    assert len(sent) == 2
+
+
+def test_tool_result_goes_back_with_its_id(fake_api):
+    sent = fake_api([
+        _reply([_use("t1", "search_code", {"query": "인증"})], "tool_use"),
+        _reply([_text("답")], "end_turn"),
+    ])
+
+    _run(execute=lambda name, params: f"{name} 결과")
+
+    followup = sent[1]["messages"][-1]
+    assert followup["role"] == "user"
+    assert followup["content"][0]["tool_use_id"] == "t1"
+    assert followup["content"][0]["content"] == "search_code 결과"
+    assert followup["content"][0]["is_error"] is False
+
+
+def test_parallel_tool_uses_come_back_in_one_message(fake_api):
+    """나눠 보내면 모델이 병렬 호출을 그만두게 학습된다."""
+    sent = fake_api([
+        _reply(
+            [_use("t1", "grep", {"pattern": "a"}), _use("t2", "grep", {"pattern": "b"})],
+            "tool_use",
+        ),
+        _reply([_text("답")], "end_turn"),
+    ])
+
+    _run()
+
+    followup = sent[1]["messages"][-1]
+    assert len(followup["content"]) == 2
+    assert [b["tool_use_id"] for b in followup["content"]] == ["t1", "t2"]
+
+
+def test_a_failing_tool_is_returned_as_an_error_not_dropped(fake_api):
+    """빠뜨리면 API 가 짝 없는 tool_use 를 거부한다."""
+    def boom(name, params):
+        raise RuntimeError("터졌다")
+
+    sent = fake_api([
+        _reply([_use("t1", "grep", {"pattern": "a"})], "tool_use"),
+        _reply([_text("답")], "end_turn"),
+    ])
+
+    result = _run(execute=boom)
+
+    block = sent[1]["messages"][-1]["content"][0]
+    assert block["is_error"] is True
+    assert "터졌다" in block["content"]
+    assert result["text"] == "답"
+
+
+def test_usage_is_summed_across_every_call(fake_api):
+    """**마지막 호출만 세면 일일 상한이 사실상 꺼진다.**"""
+    fake_api([
+        _reply([_use("t1", "grep", {"pattern": "a"})], "tool_use", tokens=10),
+        _reply([_use("t2", "grep", {"pattern": "b"})], "tool_use", tokens=20),
+        _reply([_text("답")], "end_turn", tokens=30),
+    ])
+
+    result = _run()
+
+    assert result["round_trips"] == 2
+    assert result["input_tokens"] == 60
+    assert result["output_tokens"] == 60
+    assert result["cache_write_tokens"] == 60
+    assert result["cache_read_tokens"] == 60
+    assert result["llm_ms"] == 300
+
+
+def test_billable_tokens_counts_every_call(fake_api):
+    """rate_limit 이 이 값으로 일일 상한을 센다. 합이 아니면 상한이 새 나간다."""
+    fake_api([
+        _reply([_use("t1", "grep", {"pattern": "a"})], "tool_use", tokens=10),
+        _reply([_text("답")], "end_turn", tokens=30),
+    ])
+
+    assert billable_tokens(_run()) == 160  # (10+30) × 4종
+
+
+def test_result_keeps_the_shape_run_log_expects(fake_api):
+    """append_run 은 run_summary 결과 모양을 그대로 받는다. 키가 빠지면 KeyError 다."""
+    fake_api([_reply([_text("답")], "end_turn")])
+
+    result = _run()
+
+    assert set(result) >= {
+        "text", "llm_ms", "input_tokens", "output_tokens",
+        "cache_write_tokens", "cache_read_tokens", "cost_usd",
+    }
+
+
+def test_round_trip_cap_stops_the_loop(fake_api):
+    """한도를 넘겨 계속 부르면 끊는다. 안 끊으면 비용이 이차로 는다."""
+    replies = [
+        _reply([_use(f"t{i}", "grep", {"pattern": "a"})], "tool_use")
+        for i in range(claude_client.MAX_TOOL_ROUND_TRIPS + 3)
+    ]
+    sent = fake_api(replies)
+
+    result = _run()
+
+    assert result["round_trips"] == claude_client.MAX_TOOL_ROUND_TRIPS
+    assert result["hit_round_trip_cap"] is True
+    assert len(sent) == claude_client.MAX_TOOL_ROUND_TRIPS + 1
+
+
+def test_the_cap_notice_rides_the_tail_not_tool_choice(fake_api):
+    """**tool_choice 를 건드리면 messages 캐시가 무효화된다.**
+
+    안내는 마지막 사용자 메시지 꼬리에 붙어야 접두사가 그대로 살아 있다.
+    """
+    replies = [
+        _reply([_use(f"t{i}", "grep", {"pattern": "a"})], "tool_use")
+        for i in range(claude_client.MAX_TOOL_ROUND_TRIPS)
+    ] + [_reply([_text("정리한 답")], "end_turn")]
+    sent = fake_api(replies)
+
+    result = _run()
+
+    last = sent[-1]["messages"][-1]["content"]
+    assert last[-1] == {"type": "text", "text": claude_client.ROUND_TRIP_CAP_NOTICE}
+    assert result["text"] == "정리한 답"
+    assert result["hit_round_trip_cap"] is True
+
+
+def test_no_notice_before_the_cap(fake_api):
+    """한도 전에 안내가 붙으면 모델이 일찍 포기한다."""
+    sent = fake_api([
+        _reply([_use("t1", "grep", {"pattern": "a"})], "tool_use"),
+        _reply([_text("답")], "end_turn"),
+    ])
+
+    _run()
+
+    blocks = sent[1]["messages"][-1]["content"]
+    assert all(b["type"] == "tool_result" for b in blocks)
+
+
+def test_empty_answer_after_tools_is_not_blank(fake_api):
+    """빈 말풍선이 뜨고 왜인지 아무 데도 안 남는 상태를 막는다."""
+    replies = [
+        _reply([_use(f"t{i}", "grep", {"pattern": "a"})], "tool_use")
+        for i in range(claude_client.MAX_TOOL_ROUND_TRIPS + 1)
+    ]
+    fake_api(replies)
+
+    assert _run()["text"] == claude_client.NO_ANSWER_AFTER_TOOLS
+
+
+def test_cache_breakpoints_survive_the_loop(fake_api):
+    """루프가 돈 뒤에도 브레이크포인트는 system 1 + messages[0] 1 이어야 한다.
+
+    꼬리에 또 걸면 쓰기 1.25배가 R=3 에서 이득을 먹는다.
+    """
+    sent = fake_api([
+        _reply([_use("t1", "grep", {"pattern": "a"})], "tool_use"),
+        _reply([_use("t2", "grep", {"pattern": "b"})], "tool_use"),
+        _reply([_text("답")], "end_turn"),
+    ])
+
+    _run()
+
+    messages = sent[-1]["messages"]
+    marked = [
+        block
+        for m in messages
+        if isinstance(m["content"], list)
+        for block in m["content"]
+        if isinstance(block, dict) and "cache_control" in block
+    ]
+    assert len(marked) == 1
+
+
+def test_tools_are_identical_on_every_call(fake_api):
+    """tools 는 렌더 위치 0 이다. 호출마다 달라지면 캐시 접두사가 갈린다."""
+    sent = fake_api([
+        _reply([_use("t1", "grep", {"pattern": "a"})], "tool_use"),
+        _reply([_text("답")], "end_turn"),
+    ])
+
+    _run()
+
+    assert sent[0]["tools"] == sent[1]["tools"] == TOOLS
+
+
+def test_no_tool_use_means_no_round_trips(fake_api):
+    fake_api([_reply([_text("바로 답")], "end_turn")])
+
+    result = _run()
+
+    assert result["round_trips"] == 0
+    assert result["hit_round_trip_cap"] is False
+    assert result["text"] == "바로 답"

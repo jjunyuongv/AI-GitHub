@@ -77,6 +77,8 @@ def append_run(
             "context_chars": len(context),
             "system_prompt": system_prompt,
             "summary": result["text"],
+            # 도구 루프를 거친 결과에만 있다. 요약은 한 번에 끝나므로 0.
+            "round_trips": result.get("round_trips", 0),
         }
     )
 
@@ -110,6 +112,7 @@ def append_cache_hit(
             "context_chars": 0,
             "system_prompt": "",
             "summary": summary,
+            "round_trips": 0,
         }
     )
 

@@ -73,6 +73,44 @@ def list_paths(snapshot_id: int) -> list[str]:
         return [row["path"] for row in cur.fetchall()]
 
 
+def grep(snapshot_id: int, pattern: str, limit: int) -> list[dict]:
+    """이 스냅샷의 보관 소스에서 pattern 이 든 줄을 찾는다. `{path, line, text}` 목록.
+
+    **정규식이 아니라 부분 문자열이다.** `~*` 로 정규식을 받으면 사용자가 보낸(=모델이
+    지어낸) 패턴이 백트래킹으로 DB 를 물 수 있다. 부분 문자열은 그 여지가 없고, 도구를
+    쓰는 쪽에는 식별자를 찾는 용도라 이걸로 충분하다. 대소문자는 무시한다.
+
+    **줄을 가르는 것은 DB 가 한다.** 파일 본문을 파이썬으로 끌어와 훑으면 매칭이 없는
+    파일까지 전부 전송된다 — 큰 저장소는 그것만으로 수 MB 다.
+
+    limit 은 **줄 수** 기준이다. 한 파일이 결과를 다 차지하지 않게 호출부가 정한다.
+
+    `%`·`_` 는 LIKE 의 와일드카드라 이스케이프한다 — 안 하면 `find_user` 가
+    `findXuser` 에도 걸려서, 모델이 "있다"고 본 것이 실제로는 없는 이름이 된다.
+
+    줄 끝의 CR 은 떼고 돌려준다. 보관 소스는 원문 그대로라 CRLF 파일이 섞여 있는데,
+    `\\n` 으로 가르면 모든 줄이 `\\r` 로 끝나 인용이 어긋난다.
+    """
+    if not pattern:
+        return []
+    escaped = pattern.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    needle = f"%{escaped}%"
+    with cursor(commit=False) as cur:
+        cur.execute(
+            r"""SELECT path, line_number AS line, rtrim(text, E'\r') AS text
+                  FROM snapshot_source_files,
+                       LATERAL unnest(string_to_array(content, E'\n'))
+                               WITH ORDINALITY AS lines(text, line_number)
+                 WHERE snapshot_id = %s
+                   AND content ILIKE %s ESCAPE '\'
+                   AND text ILIKE %s ESCAPE '\'
+                 ORDER BY path, line_number
+                 LIMIT %s""",
+            (snapshot_id, needle, needle, limit),
+        )
+        return cur.fetchall()
+
+
 def count(snapshot_id: int) -> int:
     """보관된 파일 수. 0 이면 이 스냅샷에는 소스가 없다.
 

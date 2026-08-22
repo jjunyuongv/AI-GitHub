@@ -86,6 +86,15 @@ CREATE TABLE IF NOT EXISTS runs (
 -- 최신순 조회가 전부다(관리자 화면·집계 모두).
 CREATE INDEX IF NOT EXISTS runs_ts_idx ON runs (ts DESC);
 
+-- 이 요청이 도구를 몇 번 불렀는가. 도구를 안 쓰는 경로(요약·캐시 히트)는 0 이다.
+--
+-- **하네스가 아니라 여기서만 실사용 분포를 알 수 있다.** 평가 하네스는 평가셋 질의만
+-- 보므로, 실제 사용자가 질문 하나에 도구를 몇 번 부르는지는 이 열에만 남는다.
+-- 비용 모델(claude_client.MAX_TOOL_ROUND_TRIPS 의 근거)이 그 분포 위에 서 있다 —
+-- FULL_INJECTION_MAX_TOKENS 를 4세션 표본으로 역산해 두고 아직 다시 못 뽑은 것과
+-- 같은 실수를 되풀이하지 않으려는 열이다.
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS round_trips INT;
+
 -- 하루치 서비스 전체 카운터. 로그인이 없어 사용자별이 아니라 합산이다.
 -- day 는 앱이 넘긴 로컬 날짜다 — CURRENT_DATE(서버 타임존)를 쓰면 집계와 경계가 어긋난다.
 CREATE TABLE IF NOT EXISTS rate_limit_daily (

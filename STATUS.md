@@ -116,6 +116,10 @@ AST 에서 자동 산출한다(sha256 앞 8자). 청킹을 고치면 자동으�
 | `EFFORT_LEVELS` | `5개` | `app.services.claude_client` | — |
 | `MAX_TOKENS` | `4096` | `app.services.claude_client` | — |
 | `MAX_HISTORY_MESSAGES` | `20` | `app.services.claude_client` | — |
+| `MAX_TOOL_ROUND_TRIPS` | `3` | `app.services.claude_client` | — |
+| `TOOL_SCHEMAS` | `3개` | `app.services.tools` | — |
+| `MAX_TOOL_RESULT_TOKENS` | `800` | `app.services.tools` | — |
+| `MAX_GREP_MATCHES` | `30` | `app.services.tools` | — |
 | `PRICING` | `1개` | `app.services.claude_client` | — |
 | `SONNET_5_INTRO_PRICE` | `(2.0, 10.0)` | `app.services.claude_client` | — |
 | `SONNET_5_LIST_PRICE` | `(3.0, 15.0)` | `app.services.claude_client` | — |
@@ -123,6 +127,12 @@ AST 에서 자동 산출한다(sha256 앞 8자). 청킹을 고치면 자동으�
 | `CACHE_READ_MULTIPLIER` | `0.1` | `app.services.claude_client` | — |
 | `REFUSAL_PHRASES` | `2개` | `app.services.claude_client` | — |
 | `CHARS_PER_TOKEN` | `2.0` | `app.services.context_builder` | — |
+
+**도구 상한 셋은 비용 산식에서 나온 값이다.** 라운드트립 R 회의 입력은
+`Σₖ(0.1·P + q + Σᵢ<ₖ(aᵢ + rᵢ))` 라 꼬리가 이차로 누적된다. 기준선($0.008155/질문)에
+`P=1,140 · q≈40 · a_tool=150 · a_final=330 · r=800` 을 대입하면 **R=3 이 2.51배,
+R=4 가 3.66배**로 `COST_RATIO_LIMIT`(3.0)을 넘는다 — 3 이 상한 아래에 남는 마지막 값이다.
+`r` 을 1,500 으로 두면 같은 R=3 에서 3.78배가 된다. **셋 중 하나만 고치면 이 산식이 깨진다.**
 
 sonnet-5 도입가는 `SONNET_5_INTRO_LAST_DAY`(2026-08-31)까지다. **날짜로 자동 전환되므로
 사람이 고칠 것이 없다** — `pricing_for(model, at)` 가 그날을 넘기면 정가를 돌려준다.
@@ -168,7 +178,7 @@ sonnet-5 도입가는 `SONNET_5_INTRO_LAST_DAY`(2026-08-31)까지다. **날짜�
 | `POOL_TIMEOUT_SECONDS` | `5` | `app.db.pool` | — |
 | `CHUNK_TABLES` | `5개` | `app.db.index_status` | — |
 | `KEEP_BUILDS` | `1` | `app.db.index_status` | — |
-| `FIELDS` | `15개` | `app.db.runs` | — |
+| `FIELDS` | `16개` | `app.db.runs` | — |
 | `EMPTY_SESSION_GRACE_HOURS` | `24` | `app.services.cleanup` | — |
 | `MAX_DAYS` | `365` | `app.services.usage_stats` | — |
 | `TOKEN_FIELDS` | `4개` | `app.services.usage_stats` | — |
@@ -187,7 +197,7 @@ sonnet-5 도입가는 `SONNET_5_INTRO_LAST_DAY`(2026-08-31)까지다. **날짜�
 | `ABSENT_SET_VERSION` | `1` | `tests.search_eval_dataset` | — |
 | `ABSENT_SETS` | `3개` | `tests.search_eval_dataset` | — |
 | `COST_RATIO_LIMIT` | `3.0` | `tests.test_citation_quality` | — |
-| `REFUSAL_SCOPES` | `5개` | `tests.test_citation_quality` | — |
+| `REFUSAL_SCOPES` | `6개` | `tests.test_citation_quality` | — |
 | `REFUSAL_NEGATIONS` | `8개` | `tests.test_citation_quality` | — |
 | `REFUSAL_CONCESSIONS` | `1개` | `tests.test_citation_quality` | — |
 
@@ -267,6 +277,31 @@ LLM 을 다시 부를 필요가 없다.
 - **저장소를 빌드하지 않는다.** SpotBugs 류가 빠진 이유다. PMD 는 소스만 본다.
 - **프로덕션 코드에 저장소 이름을 쓰지 않는다.** 분기는 언어·청크 수·파일 크기 같은
   속성으로 한다(`CLAUDE.md` §7). 저장소 이름이 허용되는 곳은 `Back/tests/` 와 `plan.md` 뿐이다.
+
+### 2.4 대화가 답하는 방식
+
+- **검색을 미리 돌리지 않는다.** 모델이 `search_code`·`read_file`·`grep` 을 필요할 때
+  부른다(`Back/app/services/tools.py`). 사전 주입한 스니펫은 캐시 브레이크포인트 **뒤**라
+  라운드트립마다 정가로 되풀이 청구된다 — 실측 산식으로 3회에 3.78배가 되어 판정 기준
+  C(3배)를 넘는다. 도구만 쓰면 같은 3회가 2.11배다.
+- **도구 목록은 요청마다 같아야 한다.** `tools` 는 프롬프트 렌더 위치 0 이라 목록이
+  갈리면 캐시 접두사가 통째로 갈라진다. 보관된 소스가 없는 스냅샷도 도구는 그대로 받고
+  `read_file`·`grep` 이 "없다"고 답한다.
+- **도구를 아예 안 붙이는 경우는 둘뿐이다** — 전체 주입 스냅샷(소스가 이미 접두사에 다
+  들어가 있다)과 색인이 아직 안 끝난 스냅샷. 둘 다 스냅샷 속성이고 한 대화 안에서
+  바뀌지 않는다(`Back/app/api/chat.py`).
+- **캐시 브레이크포인트는 2개 그대로다** — system 과 첫 사용자 메시지. 도구 왕복은 그
+  뒤에 쌓이므로 접두사는 깨지지 않는다. 꼬리에는 걸지 않는다(R=3 에서는 쓰기 1.25배가
+  이득을 먹는다).
+- **한도에 닿으면 `tool_choice` 를 바꾸지 않고 꼬리에 안내를 덧붙인다.**
+  `tool_choice` 변경은 messages 캐시를 무효화해서 마지막 호출이 스냅샷 접두사를 정가로
+  다시 계산한다(`Back/app/services/claude_client.py`).
+- **한 질문이 호출 여럿이 된다.** 토큰·시간·비용은 합산해 한 행으로 기록하고
+  `round_trips` 를 함께 남긴다 — 마지막 호출만 세면 일일 상한이 사실상 꺼진다
+  (`Back/app/db/runs.py`).
+- **tool_result 는 대화 이력에 저장하지 않는다.** `messages` 는 질문과 최종 답변 2행만
+  받는다 — 이력을 개수로 자르는 구조라(`MAX_HISTORY_MESSAGES`) 짝 잃은 `tool_use` 가
+  생기면 API 가 거부한다(`Back/app/db/chats.py`).
 
 ---
 

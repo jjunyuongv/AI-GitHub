@@ -124,6 +124,72 @@ def test_reput_does_not_touch_other_snapshots(snapshot_id):
     assert source_store.get_file(other, "a.py") == "저쪽\n"
 
 
+# --- grep ---------------------------------------------------------------------
+
+
+def test_grep_finds_the_line_and_its_number(snapshot_id):
+    source_store.put_files(snapshot_id, {"a.py": "import os\ndef find_user():\n    pass\n"})
+
+    hits = source_store.grep(snapshot_id, "find_user", limit=10)
+
+    assert hits == [{"path": "a.py", "line": 2, "text": "def find_user():"}]
+
+
+def test_grep_is_case_insensitive(snapshot_id):
+    source_store.put_files(snapshot_id, {"a.py": "class UserService:\n"})
+
+    assert source_store.grep(snapshot_id, "userservice", limit=10)
+
+
+def test_grep_strips_the_carriage_return(snapshot_id):
+    """CRLF 파일에서 모든 줄이 `\\r` 로 끝나면 인용이 한 글자씩 어긋난다."""
+    source_store.put_files(snapshot_id, {"win.js": "const a = 1;\r\nconst b = 2;\r\n"})
+
+    hits = source_store.grep(snapshot_id, "const b", limit=10)
+
+    assert hits[0]["text"] == "const b = 2;"
+
+
+def test_grep_escapes_like_wildcards(snapshot_id):
+    """`_` 는 LIKE 와일드카드다. 이스케이프하지 않으면 없는 이름을 있다고 답한다."""
+    source_store.put_files(snapshot_id, {"a.py": "def findXuser():\n    pass\n"})
+
+    assert source_store.grep(snapshot_id, "find_user", limit=10) == []
+
+
+def test_grep_stays_inside_the_snapshot(snapshot_id):
+    other = _other_snapshot()
+    source_store.put_files(snapshot_id, {"a.py": "needle here\n"})
+    source_store.put_files(other, {"a.py": "needle there\n"})
+
+    hits = source_store.grep(snapshot_id, "needle", limit=10)
+
+    assert [h["text"] for h in hits] == ["needle here"]
+
+
+def test_grep_respects_the_limit(snapshot_id):
+    source_store.put_files(snapshot_id, {"a.py": "hit\n" * 40})
+
+    assert len(source_store.grep(snapshot_id, "hit", limit=30)) == 30
+
+
+def test_grep_returns_paths_in_order(snapshot_id):
+    source_store.put_files(
+        snapshot_id, {"z.py": "needle\n", "a.py": "needle\n", "m.py": "needle\n"}
+    )
+
+    assert [h["path"] for h in source_store.grep(snapshot_id, "needle", limit=10)] == [
+        "a.py", "m.py", "z.py",
+    ]
+
+
+def test_grep_without_a_pattern_finds_nothing(snapshot_id):
+    """빈 패턴을 그대로 넘기면 `%%` 가 되어 저장소 전체가 돌아온다."""
+    source_store.put_files(snapshot_id, FILES)
+
+    assert source_store.grep(snapshot_id, "", limit=10) == []
+
+
 # --- 정리와 함께 사라지는가 ---------------------------------------------------
 
 

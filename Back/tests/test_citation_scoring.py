@@ -70,6 +70,41 @@ def test_the_full_injection_family_counts():
     assert _refused("주어진 코드 전체를 살펴봐도 인증서 만료일을 검사하는 로직은 없습니다.")
 
 
+def test_the_tool_use_family_counts():
+    """도구를 직접 부르는 경로는 **자기가 한 행동**으로 스코프를 말한다.
+
+    "검색된 범위" 대신 "읽어 본 파일에는" · "확인해 본 파일 중에는" 이 나온다.
+    이 계열이 없으면 tool use 가 **정직하게 답해도** 거절 축이 내려가고, 판정 기준 B 가
+    그 하락을 품질 저하로 읽어 틀리게 기각한다. 기준선 89건에는 이 경로의 답변이 없어서
+    재채점으로는 확인할 수 없다 — 그래서 여기 고정한다.
+    """
+    assert _refused("읽어 본 파일에는 휴가 신청 관련 코드가 없습니다.")
+    assert _refused("확인해 본 파일 중에는 소셜 로그인 설정이 보이지 않습니다.")
+    assert _refused("grep 과 read_file 로 찾아본 범위에서는 관련 구현을 찾을 수 없습니다.")
+    assert _refused("살펴본 파일들에서는 알림 발송 로직이 확인되지 않습니다.")
+
+
+def test_a_tool_scope_without_a_negation_is_not_a_refusal():
+    """"읽어 본" 만으로는 거절이 아니다 — 부정 술어가 있어야 거절 선언이다.
+
+    이 계열을 넣으면서 가장 위험한 것이 이쪽이다. 도구를 쓰면 답변이 "읽어 본 파일에서
+    확인했습니다" 처럼 **행동을 먼저 말하고 답하는** 형태가 되기 쉬운데, 그것까지
+    거절로 세면 정답을 짚은 답변이 거절로 잡혀 축이 무의미해진다.
+    """
+    assert not _refused("읽어 본 파일 중 SecurityConfig.java 26-91행에 BCrypt 설정이 있습니다.")
+    assert not _refused("확인해 본 결과 ChatHandler.java 가 웹소켓을 처리합니다.")
+
+
+def test_a_tool_scope_with_a_concession_is_not_a_refusal():
+    """도구 경로에서도 양보 규칙이 그대로 걸려야 한다."""
+    answer = (
+        "읽어 본 파일에는 실패 알림을 캐시하는 부분은 있지만,"
+        " 재전송 로직 자체는 확인되지 않습니다."
+    )
+
+    assert not _refused(answer)
+
+
 # ── 반대 방향 — 여기가 진짜 방어선이다 ───────────────────────
 
 def test_a_qualifier_after_a_real_answer_is_not_a_refusal():
@@ -138,11 +173,29 @@ def test_score_picks_the_ruler_by_kind():
 
 # ── 집계 ──────────────────────────────────────────────────────
 
-def _row(kind: str, ok: bool) -> dict:
+def _row(kind: str, ok: bool, round_trips: int = 0, capped: bool = False) -> dict:
     return {
         "kind": kind, "ok": ok, "cost_usd": 0.01, "llm_ms": 1000,
         "cache_write_tokens": 0, "cache_read_tokens": 0,
+        "round_trips": round_trips, "hit_round_trip_cap": capped,
     }
+
+
+def test_round_trips_are_averaged_over_every_row():
+    """비용 모델의 입력이다. 도구를 안 쓴 팔은 0 이어야 한다."""
+    rows = [_row("korean", True, round_trips=1), _row("absent", True, round_trips=3, capped=True)]
+
+    summary = _summarize(rows)
+
+    assert summary["avg_round_trips"] == 2.0
+    assert summary["capped"] == 1
+
+
+def test_arms_without_tools_report_zero_round_trips():
+    summary = _summarize([_row("korean", True), _row("absent", True)])
+
+    assert summary["avg_round_trips"] == 0.0
+    assert summary["capped"] == 0
 
 
 def test_absent_rows_stay_out_of_citation_accuracy():
