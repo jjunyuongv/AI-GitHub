@@ -198,7 +198,7 @@ sonnet-5 도입가는 `SONNET_5_INTRO_LAST_DAY`(2026-08-31)까지다. **날짜�
 | `ABSENT_SETS` | `3개` | `tests.search_eval_dataset` | — |
 | `COST_RATIO_LIMIT` | `3.0` | `tests.test_citation_quality` | — |
 | `REFUSAL_SCOPES` | `6개` | `tests.test_citation_quality` | — |
-| `REFUSAL_NEGATIONS` | `8개` | `tests.test_citation_quality` | — |
+| `REFUSAL_NEGATIONS` | `3개` | `tests.test_citation_quality` | — |
 | `REFUSAL_CONCESSIONS` | `1개` | `tests.test_citation_quality` | — |
 
 `ABSENT_SETS` 는 저장소에 **없는** 기능을 묻는 질의다(세트당 6개). `EVAL_SETS` 에 섞지
@@ -211,7 +211,15 @@ docstring 에 측정 전에 고정해 두었다.
 
 거절 채점기 셋(`REFUSAL_SCOPES`·`REFUSAL_NEGATIONS`·`REFUSAL_CONCESSIONS`)은
 **"[어디를 봤는가] + [거기에 없다]" 문장 구조에서 유도했다.** 정규식을 늘려 실패 건수를
-맞춘 것이 아니다. **첫 문장만 본다** — 프롬프트가 "한 문장으로 밝히라"고 요구하므로 진짜
+맞춘 것이 아니다.
+
+**이 자는 화이트리스트라 답변 양식이 바뀌면 샌다 — 두 번 연속 그랬다.** 처음에는 규정
+문구를 연속 매칭해서 24건 중 15건을, 다음에는 부정 술어를 낱말로 나열해서 tool use
+답변 15건을 놓쳤다. 두 번 다 **날조는 0건이었고 전부 자의 문제였다.** 그래서 항목을
+낱말이 아니라 구조로 묶어 둔다 — 부정은 셋뿐이고(`없-`+어미 · `[탐색 동사]+지 않` ·
+가능성 부정), 스코프는 범위 명사를 **양쪽 어순으로** 감싼다(`전체 X` / `X 전체`).
+**다음에도 샐 것이다.** 그때 무과금으로 다시 매길 수 있게 답변 원문을 남겨 두는 것이
+이 설계의 값이다. **첫 문장만 본다** — 프롬프트가 "한 문장으로 밝히라"고 요구하므로 진짜
 거절은 답변을 열면서 나오고, 본문 어디든 보면 근거를 댄 뒤의 단서까지 거절로 잡힌다.
 `tests/test_rescore_refusals.py` 가 양쪽에서 조인다: 거절 질의 24건은 전부 잡히고,
 **정답을 짚은 답변은 하나도 거절로 잡히지 않는다**(뒤쪽이 진짜 방어선이다).

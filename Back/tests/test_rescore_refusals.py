@@ -72,20 +72,58 @@ def _case_for(set_name: str, query_id: str) -> dict:
 
 # ── 자를 양쪽에서 조인다 ──────────────────────────────────────
 
-def test_every_absent_answer_is_now_scored_as_refused():
-    """거절 질의의 답변은 전부 거절로 잡혀야 한다.
+# **첫 문장이 거절 선언이 아닌 답변들.** 자가 못 잡는 것이 맞는 건들이라 여기 적어 둔다.
+#
+# 요구를 "거절 질의는 전부 잡힌다"로 두면 **자를 틀리게 만들어야만 만족된다** —
+# 이 셋을 잡으려면 첫 문장 제한이나 양보 규칙을 풀어야 하고, 그 순간
+# "지어낸 답 + 면피 한 줄"이 거절로 통과해 축이 무의미해진다.
+# (0단계에서 같은 이유로 요구 하나를 바꿨다)
+#
+# **목록으로 두는 이유는 방어선을 유지하기 위해서다.** 새로 새는 건이 생기면 여전히 깨진다.
+NOT_A_REFUSAL_OPENING = {
+    # 첫 문장이 답변이다. 거절은 마지막 문단에 있다 — 첫 문장 제한이 의도대로 동작했다.
+    ("marryday", "rag", "md_ab_06"),
+    # 첫 문장이 "X 는 …에 대한 것이지 Y 가 아닙니다" — 찾은 것을 설명하는 문장이지
+    # 거절 선언이 아니다. 부정 술어도 "아닙니다"라 부재가 아니라 동일성 부정이다.
+    ("apns4j", "tool", "ap_ab_03"),
+    # 양보("옵션은 있지만 … 발견되지 않았습니다"). 일부는 답한 문장이라 거절로 세지 않는다.
+    ("apns4j", "tool", "ap_ab_06"),
+}
 
-    사람이 24건을 전부 읽고 "정확한 거절" 로 판정했다(날조 0건). 옛 채점기가 15건을
-    놓친 것은 모델이 규정 문구에 낱말을 끼워 넣었기 때문이다.
+
+def test_every_absent_answer_is_now_scored_as_refused():
+    """거절 질의의 답변은 **첫 문장이 거절인 한** 전부 잡혀야 한다.
+
+    사람이 원문을 전부 읽고 "정확한 거절" 로 판정했다(두 차례 실측 모두 날조 0건).
+    못 잡은 것은 언제나 자의 문제였다 — 옛 채점기는 규정 문구를 연속 매칭해서 15건을,
+    그 다음 자는 부정 술어를 낱말로 나열해서 다시 10건을 놓쳤다.
+
+    `NOT_A_REFUSAL_OPENING` 은 첫 문장이 거절 선언이 아닌 건들이다. 그것까지 잡으려면
+    자를 틀리게 만들어야 한다.
     """
     missed = [
         f"  [{r['set']}/{r['arm']}] {r['id']}: {_first_sentence(r['answer'])[:90]}"
         for r in _rows()
-        if r["kind"] == "absent" and not _refused(r["answer"])
+        if r["kind"] == "absent"
+        and not _refused(r["answer"])
+        and (r["set"], r["arm"], r["id"]) not in NOT_A_REFUSAL_OPENING
     ]
 
     assert not missed, (
         f"거절인데 못 잡은 답변 {len(missed)}건:\n" + "\n".join(missed)
+    )
+
+
+def test_the_known_exceptions_are_still_exceptions():
+    """면제 목록이 낡으면 조용히 방어선이 넓어진다. 실제로 여전히 안 잡히는지 확인한다."""
+    rows = {(r["set"], r["arm"], r["id"]): r for r in _rows()}
+    stale = [
+        key for key in NOT_A_REFUSAL_OPENING
+        if key in rows and _refused(rows[key]["answer"])
+    ]
+
+    assert not stale, (
+        f"이제는 잡히는데 면제 목록에 남아 있다 — 지울 것: {sorted(stale)}"
     )
 
 
