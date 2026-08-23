@@ -708,7 +708,10 @@ button.citation-item .lines {
   box-shadow: 0 0 0 3px rgba(31, 111, 235, 0.3);
 }
 
-.chat button {
+/* **전송 버튼만이다.** `.chat button` 으로 두면 답변 안의 인용 버튼까지 초록 버튼이
+   된다 — 명시도가 같은데 `button.citation` 보다 뒤에 있어서 이긴다. 실제로 그랬다:
+   인용 표기가 문장 속에서 초록 배경에 흰 글씨로 튀고, 근거 목록은 초록 막대가 됐다. */
+.chat form button {
   padding: 8px 16px;
   font: inherit;
   font-size: 0.875rem;
@@ -722,11 +725,11 @@ button.citation-item .lines {
   transition: background 0.15s;
 }
 
-.chat button:hover:not(:disabled) {
+.chat form button:hover:not(:disabled) {
   background: var(--success-hover);
 }
 
-.chat button:disabled {
+.chat form button:disabled {
   cursor: not-allowed;
   opacity: 0.5;
 }

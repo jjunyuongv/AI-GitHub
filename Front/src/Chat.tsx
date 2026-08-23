@@ -76,6 +76,11 @@ function IndexNotice({ status }: { status: IndexStatus }) {
   );
 }
 
+/** 행 범위 표기. 한 줄이면 "17행", 여러 줄이면 "29-32행". */
+function lineLabel(start: number, end: number) {
+  return start === end ? `${start}행` : `${start}-${end}행`;
+}
+
 /** 인용이 가리킨 코드. **틀린 행 번호를 감추지 않는 것이 이 컴포넌트의 목적이다.**
  *
  * 실측 행 번호 정확도가 72.4% 라 넷 중 하나는 엉뚱한 줄을 짚는다. 그래서
@@ -91,17 +96,17 @@ function CodeView({ view }: { view: FileView }) {
       <p className="citation-head">
         <code>{view.path}</code>{" "}
         <span className="cited">
-          {view.requested_start}-{view.requested_end}행
+          {lineLabel(view.requested_start, view.requested_end)}
         </span>{" "}
         <span className="shown">
           (전체 {view.total_lines.toLocaleString()}행
-          {lines.length ? ` · ${view.start_line}-${view.end_line}행 표시` : ""})
+          {lines.length ? ` · ${lineLabel(view.start_line, view.end_line)} 표시` : ""})
         </span>
       </p>
 
       {lines.length === 0 ? (
         <p className="citation-missing">
-          답변은 {view.requested_start}-{view.requested_end}행이라고 했지만 이 파일은{" "}
+          답변은 {lineLabel(view.requested_start, view.requested_end)}이라고 했지만 이 파일은{" "}
           {view.total_lines.toLocaleString()}행뿐입니다.
         </p>
       ) : (
@@ -291,7 +296,7 @@ export default function ChatPanel({ sessionId, initialMessages }: Props) {
                         type="button"
                         className={`citation${opened[key] ? " open" : ""}`}
                         onClick={() => toggleCitation(key, cite)}
-                        title={`${cite.path} ${cite.start_line}-${cite.end_line}행 열기`}
+                        title={`${cite.path} ${lineLabel(cite.start_line, cite.end_line)} 열기`}
                       >
                         {children}
                       </button>
@@ -318,7 +323,7 @@ export default function ChatPanel({ sessionId, initialMessages }: Props) {
                       >
                         {state ? "▾" : "▸"} {cite.path}{" "}
                         <span className="lines">
-                          {cite.start_line}-{cite.end_line}행
+                          {lineLabel(cite.start_line, cite.end_line)}
                         </span>
                       </button>
                       {state === "loading" && <p className="citation-note">여는 중…</p>}
