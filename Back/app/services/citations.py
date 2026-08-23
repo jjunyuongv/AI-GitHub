@@ -9,13 +9,24 @@
 `_verdict()` 가 한다 — 화면은 코드를 보여줄 뿐이고 맞았는지는 사람이 본다.
 실측 정확도가 72.4% 라서, **틀린 것을 감추지 않는 것이 이 기능의 목적이다.**
 
+## 행 표기가 있으면 다 잡는다 — 채점 관문을 여기 두지 않는다
+
+전에는 **같은 줄에 코드 조각이 있어야** 인용으로 쳤다(`CODE_LIKE`). 그 규칙은 채점의
+오탐을 막으려는 것이었는데, 화면 경로까지 함께 막고 있었다 — 실측에서 파일명과 행
+범위가 멀쩡히 잡힌 450건이 조각 하나 때문에 버려졌다. 화면은 조각이 필요 없다.
+파일과 행 범위만 있으면 코드를 펼칠 수 있다.
+
+그래서 **관문은 채점 쪽으로 옮겼다**(`tests/test_line_accuracy.py` 의 `CODE_LIKE`).
+여기서는 `snippets` 를 **모아 두기만** 한다 — 채점이 쓸 재료이고, 이 모듈은 그것으로
+무엇을 거르지 않는다.
+
 ## 규칙의 한계 — 알고 쓴다
 
 자연어를 정규식으로 뽑는 것이라:
-- **코드를 그대로 인용한 것만 잡는다**(`CODE_LIKE`). 이름 하나만 적은 것은 "그 줄에 이
-  문자열이 있다"는 주장이 아니라 서술이다
 - 파일명이 그 줄에 없으면 **직전에 언급된 것**을 쓴다 — 답변이 파일을 제목으로 한 번
   쓰고 아래 불릿에 행 번호만 적는 형식이 흔하다
+- 관문을 연 만큼 **오탐도 화면에 나온다.** 그것이 이 기능의 목적이다 — 사용자가 열어
+  보고 닫으면 그만이고, 감추면 틀린 것을 고칠 수가 없다
 """
 
 import re
@@ -26,15 +37,9 @@ SINGLE_RE = re.compile(r"(?<![\d~\-–])(\d{1,5})\s*행")
 # 백틱 안의 내용. 파일명인지 코드인지는 뒤에서 가른다.
 TICK_RE = re.compile(r"`([^`]+)`")
 
-# 이보다 짧은 조각은 어디에나 있어 변별력이 없다(`size` 같은 것).
+# 채점이 쓸 조각의 하한. 이보다 짧으면 어디에나 있어 변별력이 없다(`size` 같은 것).
+# **거르는 것은 `snippets` 목록이지 인용이 아니다** — 조각이 하나도 안 남아도 인용은 만든다.
 MIN_SNIPPET_CHARS = 6
-
-# **코드를 그대로 인용한 것만 잡는다.** 공백이나 구두점이 있어야 한다.
-#
-# 왜: `ApnsChannel`·`String`·`IOException` 처럼 이름 하나만 적은 것은 "그 줄에 이 문자열이
-# 있다"는 주장이 아니라 "이 범위가 이런 일을 한다"는 서술이다. 그걸 문자열 위치로 채점하면
-# 모델이 아니라 **파서의 오탐**을 재게 된다.
-CODE_LIKE = re.compile(r"[ ;={}]|\(\s*\w")
 
 # 행 번호를 말하면서 범위를 크게 잡는 답변이 있다. 너무 넓으면 "맞다"가 무의미해진다.
 MAX_RANGE_LINES = 200
@@ -67,6 +72,8 @@ def extract(answer: str) -> list[dict]:
     그 시작 위치다. 화면이 이 둘로 링크를 건다 — `offset` 으로 렌더 트리의 노드를 고르고
     `marker` 로 노드 안 위치를 정한다(마크다운 렌더러가 줄 앞뒤 공백을 지워서 offset
     산술만으로는 어긋난다).
+
+    `snippets` 는 **채점용 재료**다. 비어 있어도 인용은 만든다 — 화면은 조각이 필요 없다.
 
     줄 경계는 `splitlines()` 와 같다. offset 을 세려고 `split("\\n")` 으로 바꾸면
     CRLF 답변에서 줄이 `\\r` 로 끝나 기존 판정과 달라진다 — `keepends=True` 로 길이만
@@ -103,13 +110,8 @@ def extract(answer: str) -> list[dict]:
 
         snippets = [
             t for t in ticks
-            if not looks_like_path(t)
-            and len(t.strip()) >= MIN_SNIPPET_CHARS
-            and CODE_LIKE.search(t)
+            if not looks_like_path(t) and len(t.strip()) >= MIN_SNIPPET_CHARS
         ]
-        if not snippets:
-            offset += len(raw)
-            continue
 
         for start, end, match in spans:
             if start <= end and (end - start) <= MAX_RANGE_LINES:
@@ -131,6 +133,9 @@ def for_answer(answer: str, paths: list[str]) -> list[dict]:
 
     해석되지 않는 인용은 **버린다** — 링크를 만들어 놓고 404 를 띄우는 것보다
     링크가 없는 편이 낫다. `snippets` 는 판정용이라 여기서는 빼고 보낸다.
+
+    **행 범위가 파일 밖인지는 보지 않는다.** 여기서는 파일 내용을 모르기도 하고,
+    무엇보다 그건 버릴 이유가 아니다 — 화면이 "이 파일은 N행뿐입니다"를 보여 준다.
     """
     resolved = []
     for cite in extract(answer):

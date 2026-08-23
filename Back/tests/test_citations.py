@@ -126,32 +126,53 @@ def test_a_line_number_before_any_file_is_dropped():
     assert extract(answer) == []
 
 
-# --- 코드 인용만 잡는다 --------------------------------------------------------
+# --- 행 표기가 있으면 다 잡는다 ------------------------------------------------
 
 
-def test_a_bare_name_in_backticks_is_not_a_citation():
-    """`ApnsChannel` 처럼 이름 하나는 "그 줄에 이 문자열이 있다"는 주장이 아니라 서술이다.
+def test_a_bare_name_in_backticks_is_still_a_citation():
+    """`PasswordEncoder` 처럼 이름 하나만 적어도 **인용은 만든다.**
 
-    이걸 인용으로 세면 모델이 아니라 파서의 오탐을 재게 된다.
+    전에는 여기서 버렸다. 그 규칙(`CODE_LIKE`)은 채점의 오탐을 막으려던 것인데 화면
+    경로까지 막고 있었다 — 지금은 `tests/test_line_accuracy.py` 로 옮겼다.
     """
     answer = "- `UserService.java`(26-49행)에서 `PasswordEncoder` 를 씁니다."
 
-    assert extract(answer) == []
+    cites = extract(answer)
+
+    assert len(cites) == 1
+    assert (cites[0]["start"], cites[0]["end"]) == (26, 49)
 
 
-def test_a_short_snippet_is_not_a_citation():
-    """`size` 같은 짧은 조각은 어디에나 있어 변별력이 없다.
+def test_a_line_with_no_backticks_at_all_is_still_a_citation():
+    """실제로 링크가 안 되던 모양이다 — 파일명은 앞 줄에서 잇고 조각은 아예 없다."""
+    answer = (
+        "## `ChatHandler.java`\n"
+        "\n"
+        "- 연결이 끊기면 29~32행에서 세션을 지웁니다.\n"
+    )
+
+    cites = extract(answer)
+
+    assert len(cites) == 1
+    assert cites[0]["marker"] == "29~32행"
+    assert cites[0]["snippets"] == []
+
+
+def test_a_short_snippet_is_not_kept_for_scoring():
+    """`size` 같은 짧은 조각은 어디에나 있어 변별력이 없다 — **채점 재료에서** 뺀다.
 
     **조각을 `MIN_SNIPPET_CHARS` 경계에 딱 맞춘다.** `a=b`(3자)처럼 한참 짧은 것을 쓰면
     상한을 4로 낮추는 변이가 통과한다 — 실제로 그랬다. 5자짜리 코드 모양 조각이라야
     "6이면 버리고 5면 남긴다"가 갈린다.
+
+    관문이 옮겨진 뒤로는 **인용 자체는 만들어진다.** 갈리는 것은 `snippets` 뿐이다.
     """
-    short = "a = b"                      # 5자, 공백이 있어 CODE_LIKE 는 통과한다
+    short = "a = b"                      # 5자
     assert len(short) == MIN_SNIPPET_CHARS - 1
 
     answer = f"- `UserService.java`(26-49행)에서 `{short}` 를 씁니다."
 
-    assert extract(answer) == []
+    assert extract(answer)[0]["snippets"] == []
 
 
 def test_a_snippet_exactly_at_the_minimum_is_kept():
@@ -161,7 +182,7 @@ def test_a_snippet_exactly_at_the_minimum_is_kept():
 
     answer = f"- `UserService.java`(26-49행)에서 `{exact}` 를 씁니다."
 
-    assert len(extract(answer)) == 1
+    assert extract(answer)[0]["snippets"] == [exact]
 
 
 def test_an_absurdly_wide_range_is_dropped():
