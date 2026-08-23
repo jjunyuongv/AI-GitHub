@@ -486,3 +486,47 @@ def test_no_tool_use_means_no_round_trips(fake_api):
     assert result["round_trips"] == 0
     assert result["hit_round_trip_cap"] is False
     assert result["text"] == "바로 답"
+
+
+# --- 텍스트 없이 끝난 응답 ---------------------------------------------------
+
+
+def _thinking():
+    """text 블록 없이 온 응답의 실제 모양.
+
+    `thinking` 을 안 보내도 sonnet-5 는 adaptive 로 돌고, display 기본값이 "omitted" 라
+    그 블록의 text 가 빈 문자열이다. 실측으로 출력 15~16토큰이 여기에만 있었다.
+    """
+    return SimpleNamespace(type="thinking", thinking="")
+
+
+def _chat_without_tools():
+    return claude_client.run_chat(CONTEXT, SUMMARY, [], "질문")
+
+
+def test_a_textless_answer_is_not_blank_without_tools(fake_api):
+    """**도구를 안 붙인 경로에서 실제로 빈 답변이 나갔다.** 화면에 빈 말풍선만 남고
+    에러도 안 떠서 사용자는 이유를 알 수 없었다."""
+    fake_api([_reply([_thinking()], "end_turn")])
+
+    assert _chat_without_tools()["text"] == claude_client.NO_ANSWER
+
+
+def test_a_real_answer_is_left_alone(fake_api):
+    """폴백이 정상 답변까지 덮으면 안 된다 (뒤쪽이 진짜 방어선이다)."""
+    fake_api([_reply([_text("진짜 답")], "end_turn")])
+
+    assert _chat_without_tools()["text"] == "진짜 답"
+
+
+def test_the_empty_answer_notice_matches_the_path(fake_api):
+    """도구를 **안 쓴** 건에 "도구를 여러 번 불렀지만" 이라고 하면 거짓말이 된다.
+
+    두 문구를 하나로 합치면 이 테스트가 깨진다.
+    """
+    fake_api([_reply([_thinking()], "end_turn")])
+
+    text = _run()["text"]
+
+    assert text == claude_client.NO_ANSWER
+    assert text != claude_client.NO_ANSWER_AFTER_TOOLS

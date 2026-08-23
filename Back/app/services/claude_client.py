@@ -54,6 +54,15 @@ NO_ANSWER_AFTER_TOOLS = (
     "도구를 여러 번 불렀지만 답을 정리하지 못했습니다. 질문을 좁혀 다시 물어봐 주세요."
 )
 
+# 도구를 부르지 않았는데도 텍스트 블록이 하나도 안 온 경우. **실측으로 있었다** —
+# 출력 15~16토큰 · 1.5초 · text 블록 0개로 두 번 연속. 남은 것은 thinking 블록뿐이었다
+# (`thinking` 을 안 보내도 sonnet-5 는 adaptive 로 돌고, display 기본값이 "omitted" 라
+# 그 블록의 text 가 빈 문자열이다. `_text_of` 는 type == "text" 만 join 한다).
+#
+# **NO_ANSWER_AFTER_TOOLS 를 재사용하지 않는다.** 이 경로는 도구를 쓰지 않았으므로
+# 그 문구가 거짓이 된다. 도구 유무와 무관한 말로 따로 둔다.
+NO_ANSWER = "답변을 만들지 못했습니다. 질문을 조금 바꿔 다시 물어봐 주세요."
+
 # 1M 토큰당 USD (input, output).
 PRICING = {
     "claude-haiku-4-5": (1.00, 5.00),
@@ -424,7 +433,7 @@ def _call_loop(
         messages.append({"role": "user", "content": content})
 
     return {
-        "text": text or (NO_ANSWER_AFTER_TOOLS if round_trips else ""),
+        "text": text or (NO_ANSWER_AFTER_TOOLS if round_trips else NO_ANSWER),
         **totals,
         "cost_usd": estimate_cost(
             model,
@@ -540,6 +549,9 @@ def run_chat(
             tools=tools,
             execute=execute,
         )
-    return _call(
+    result = _call(
         model=model, effort=effort, system=CHAT_SYSTEM_PROMPT, messages=messages
     )
+    # **여기서 막는다. `_call()` 안이 아니다** — 그쪽은 run_summary() 도 쓰는데, 요약이
+    # 이 문구로 대체되면 summary_cache 에 그대로 굳어 저장소마다 남는다.
+    return {**result, "text": result["text"] or NO_ANSWER}
