@@ -95,6 +95,14 @@ CREATE INDEX IF NOT EXISTS runs_ts_idx ON runs (ts DESC);
 -- 같은 실수를 되풀이하지 않으려는 열이다.
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS round_trips INT;
 
+-- 마지막 호출이 끝난 이유(end_turn · max_tokens · refusal · tool_use). 캐시 히트는 NULL.
+--
+-- **답변이 비었을 때 원인을 가르는 유일한 열이다.** 전에는 남는 곳이 없어서, 빈 답변
+-- 두 건이 refusal 이었는지 thinking 만 내고 끝난 end_turn 이었는지 사후에 못 가렸다
+-- (출력 15~16토큰 · text 블록 0개까지만 알 수 있었다). 답변 원문은 summary 에 남지만
+-- 그것이 비어 있는 것이 곧 증상이라, 원문으로는 아무것도 되살릴 수 없다.
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS stop_reason TEXT;
+
 -- 하루치 서비스 전체 카운터. 로그인이 없어 사용자별이 아니라 합산이다.
 -- day 는 앱이 넘긴 로컬 날짜다 — CURRENT_DATE(서버 타임존)를 쓰면 집계와 경계가 어긋난다.
 CREATE TABLE IF NOT EXISTS rate_limit_daily (

@@ -79,6 +79,8 @@ def append_run(
             "summary": result["text"],
             # 도구 루프를 거친 결과에만 있다. 요약은 한 번에 끝나므로 0.
             "round_trips": result.get("round_trips", 0),
+            # 마지막 호출이 왜 끝났는가. 답변이 비었을 때 이것 없이는 원인을 못 가린다.
+            "stop_reason": result.get("stop_reason"),
         }
     )
 
@@ -113,6 +115,8 @@ def append_cache_hit(
             "system_prompt": "",
             "summary": summary,
             "round_trips": 0,
+            # 호출이 없었으므로 끝난 이유도 없다.
+            "stop_reason": None,
         }
     )
 

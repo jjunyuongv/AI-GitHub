@@ -183,7 +183,7 @@ sonnet-5 도입가는 `SONNET_5_INTRO_LAST_DAY`(2026-08-31)까지다. **날짜�
 | `POOL_TIMEOUT_SECONDS` | `5` | `app.db.pool` | — |
 | `CHUNK_TABLES` | `5개` | `app.db.index_status` | — |
 | `KEEP_BUILDS` | `1` | `app.db.index_status` | — |
-| `FIELDS` | `16개` | `app.db.runs` | — |
+| `FIELDS` | `17개` | `app.db.runs` | — |
 | `EMPTY_SESSION_GRACE_HOURS` | `24` | `app.services.cleanup` | — |
 | `MAX_DAYS` | `365` | `app.services.usage_stats` | — |
 | `TOKEN_FIELDS` | `4개` | `app.services.usage_stats` | — |

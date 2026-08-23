@@ -82,6 +82,31 @@ def test_both_kinds_share_the_same_fields():
     assert set(run) == set(hit)
 
 
+def test_stop_reason_is_carried_from_the_call():
+    """**두 값을 다 검사한다** — 한쪽만 보면 상수를 박아 넣어도 통과한다.
+
+    답변이 비었을 때 원인을 가르는 유일한 열이다.
+    """
+    def record_with(reason):
+        return run_log.append_run(
+            source="chat",
+            repo="psf/requests",
+            model="m",
+            effort=None,
+            fetch_ms=1,
+            context="",
+            system_prompt="",
+            result={**RESULT, "stop_reason": reason},
+        )
+
+    assert record_with("end_turn")["stop_reason"] == "end_turn"
+    assert record_with("refusal")["stop_reason"] == "refusal"
+    # 캐시 히트는 호출이 없었으므로 끝난 이유도 없다.
+    assert run_log.append_cache_hit(
+        source="analyze", repo="psf/requests", model="m", fetch_ms=1, summary="요약"
+    )["stop_reason"] is None
+
+
 def test_unwritable_log_does_not_raise(monkeypatch):
     """LLM 호출이 끝난 뒤에 불리므로, 여기서 예외가 나면 토큰만 쓰고 응답을 잃는다."""
 

@@ -55,6 +55,21 @@ def test_cache_hit_is_recorded_with_zero_cost():
     assert record["cost_usd"] == 0.0
 
 
+def test_stop_reason_round_trips_through_the_db():
+    """열이 없으면 INSERT 가 깨진다 — FIELDS 와 schema.sql 이 함께 가는지 본다.
+
+    **두 값을 다 넣는다.** 한 값만 보면 상수를 박아 넣어도 통과한다.
+    """
+    for reason in ("end_turn", "refusal"):
+        run_log.append_run(
+            source="chat", repo="psf/requests", model="m", effort=None,
+            fetch_ms=1, context="c", system_prompt="s",
+            result={**RESULT, "stop_reason": reason},
+        )
+
+    assert [r["stop_reason"] for r in run_log.read(10)] == ["refusal", "end_turn"]
+
+
 def test_ts_is_an_iso_string_not_a_datetime():
     """usage_stats 가 `datetime.fromisoformat(record["ts"])` 로 파싱한다.
 

@@ -331,6 +331,10 @@ def _call(*, model: str, effort: str, system: str, messages: list[dict]) -> dict
     )
     return {
         "text": _text_of(response.content),
+        # **왜 텍스트가 없었는지는 이 값에만 남는다.** 빈 답변이 실제로 나갔을 때
+        # refusal 이었는지 end_turn 이었는지 기록으로 가릴 수가 없어 조사를 처음부터
+        # 다시 해야 했다 (runs 61·62).
+        "stop_reason": response.stop_reason,
         **result,
         "cost_usd": estimate_cost(
             model,
@@ -434,6 +438,9 @@ def _call_loop(
 
     return {
         "text": text or (NO_ANSWER_AFTER_TOOLS if round_trips else NO_ANSWER),
+        # **마지막 호출의 값이다.** 첫 호출을 실으면 도구를 쓴 건이 전부 "tool_use" 로
+        # 남아, 답을 못 낸 건과 정상 건이 구분되지 않는다.
+        "stop_reason": per_call[-1]["stop_reason"],
         **totals,
         "cost_usd": estimate_cost(
             model,

@@ -530,3 +530,25 @@ def test_the_empty_answer_notice_matches_the_path(fake_api):
 
     assert text == claude_client.NO_ANSWER
     assert text != claude_client.NO_ANSWER_AFTER_TOOLS
+
+
+def test_stop_reason_rides_along(fake_api):
+    """**두 값을 다 검사한다** — 한쪽만 보면 문자열을 박아 넣어도 통과한다.
+
+    빈 답변이 refusal 이었는지 end_turn 이었는지는 이 값으로만 갈린다.
+    """
+    fake_api([_reply([_text("답")], "end_turn")])
+    assert _chat_without_tools()["stop_reason"] == "end_turn"
+
+    fake_api([_reply([_thinking()], "refusal")])
+    assert _chat_without_tools()["stop_reason"] == "refusal"
+
+
+def test_the_loop_reports_the_last_stop_reason(fake_api):
+    """첫 호출 값을 실으면 도구를 쓴 건이 전부 "tool_use" 로 남는다."""
+    fake_api([
+        _reply([_use("t1", "grep", {"pattern": "a"})], "tool_use"),
+        _reply([_text("답")], "refusal"),
+    ])
+
+    assert _run()["stop_reason"] == "refusal"

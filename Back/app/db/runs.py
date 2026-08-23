@@ -27,6 +27,8 @@ FIELDS = (
     "summary",
     # 도구를 몇 번 불렀는가. 도구를 안 쓰는 경로는 0 이다.
     "round_trips",
+    # 마지막 호출이 끝난 이유. 캐시 히트는 None 이다.
+    "stop_reason",
 )
 
 
