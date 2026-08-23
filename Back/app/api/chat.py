@@ -1,6 +1,7 @@
 import logging
 import time
 import uuid
+from collections import Counter
 from datetime import datetime, timezone
 
 import anthropic
@@ -173,12 +174,24 @@ def chat(req: ChatRequest, request: Request):
     )
     rate_limit.record_tokens(billable_tokens(result))
 
+    # **유실을 센다.** 행 표기를 잡고도 인용을 못 만든 건수다 — 화면의 `onMiss` 는
+    # 인용을 받은 뒤 링크를 못 건 것만 세므로 이쪽 유실은 어디에도 안 잡혔다.
+    dropped: Counter = Counter()
+    cites = citations.for_answer(
+        result["text"], _stored_paths(session["snapshot_id"]), dropped
+    )
+    if dropped:
+        logger.info(
+            "인용 %d건 · 행 표기를 잡고도 버림 %d건 (%s)",
+            len(cites),
+            sum(dropped.values()),
+            ", ".join(f"{reason} {n}" for reason, n in dropped.most_common()),
+        )
+
     return ChatResponse(
         session_id=req.session_id,
         answer=result["text"],
-        citations=citations.for_answer(
-            result["text"], _stored_paths(session["snapshot_id"])
-        ),
+        citations=cites,
     )
 
 

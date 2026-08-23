@@ -5,6 +5,8 @@
 규칙이 바뀌면 `-m evaluation tests/test_line_accuracy.py` 의 수치가 움직인다.
 """
 
+from collections import Counter
+
 from app.services.citations import (
     MIN_SNIPPET_CHARS,
     extract,
@@ -250,3 +252,65 @@ def test_for_answer_drops_the_judging_only_field():
 
 def test_an_answer_without_citations_gives_an_empty_list():
     assert for_answer("주어진 정보로는 알 수 없습니다.", PATHS) == []
+
+
+# --- 버린 것을 센다 ------------------------------------------------------------
+
+
+def test_dropped_counts_each_reason_separately():
+    """사유가 뭉뚱그려지면 무엇을 고쳐야 하는지 알 수 없다.
+
+    세 사유가 **서로 다른 칸에** 들어가는지 본다 — 한 칸에 몰아넣는 변이가 통과하면
+    안 된다. 그래서 건수도 사유마다 다르게 만든다(경로 해석 실패만 2건).
+    """
+    answer = (
+        "35-42행에서 `save(user) {}` 를 부릅니다.\n"                    # 파일명 없음
+        "- `Nope.java`(1-5행)에서 `doThing(x) {}` 를 부릅니다.\n"        # 경로 해석 실패
+        "- `Gone.java`(7-9행)에서 `doOther(x) {}` 를 부릅니다.\n"        # 경로 해석 실패
+        "- `UserService.java`(1-9999행)에서 `save(u) {}` 를 부릅니다.\n"  # 너무 넓음
+    )
+    dropped = Counter()
+
+    assert for_answer(answer, PATHS, dropped) == []
+    assert dropped == Counter({
+        "경로 해석 실패": 2,
+        "파일명 없음": 1,
+        "범위가 너무 넓음": 1,
+    })
+
+
+def test_an_ambiguous_suffix_is_counted_apart_from_an_unknown_one():
+    """둘 다 `resolve_path` 는 None 이지만 **고칠 방법이 다르다.**
+
+    중복은 답변이 경로를 더 길게 쓰면 풀리고, 해석 실패는 보관이 없거나 오타다.
+    같은 칸에 세면 그 구분이 사라진다.
+    """
+    dupes = ["a/User.java", "b/User.java"]
+    answer = "- `User.java`(1-5행)에서 `doThing(x) {}` 를 부릅니다."
+    dropped = Counter()
+
+    assert for_answer(answer, dupes, dropped) == []
+    assert dropped == Counter({"접미사 중복": 1})
+
+
+def test_nothing_is_counted_when_every_citation_resolves():
+    dropped = Counter()
+
+    for_answer("- `UserService.java`(26-49행)에서 `encode(raw) {}` 를 씁니다.", PATHS, dropped)
+
+    assert dropped == Counter()
+
+
+def test_an_out_of_file_range_is_not_a_drop():
+    """**파일 밖은 버릴 이유가 아니다.** 화면이 "이 파일은 N행뿐입니다"를 보여 준다.
+
+    여기서 버리면 틀린 인용이 조용히 사라져 이 기능의 목적과 반대가 된다.
+    """
+    dropped = Counter()
+
+    cites = for_answer(
+        "- `UserService.java` 99999행의 `encode(raw) {}` 를 보세요.", PATHS, dropped
+    )
+
+    assert [c["start_line"] for c in cites] == [99999]
+    assert dropped == Counter()
