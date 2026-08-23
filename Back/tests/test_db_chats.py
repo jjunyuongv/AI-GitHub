@@ -92,6 +92,66 @@ def test_limit_keeps_the_recent_messages_in_order(snapshot):
     assert [m["content"] for m in recent] == ["질문3", "답변3", "질문4", "답변4"]
 
 
+def test_empty_answer_takes_its_question_with_it(snapshot):
+    """빈 답변은 **짝인 질문과 함께** 빠진다.
+
+    빈 문자열이 그대로 저장된 적이 있고 그 행들이 요청마다 이력에 실려 갔다.
+    답변만 빼면 user 가 연속으로 남아, 답을 못 받은 질문만 화면에 떠 있게 된다.
+    """
+    session_id = chats.create_session(snapshot["id"])
+    chats.add_exchange(session_id, "질문0", "답변0")
+    chats.add_exchange(session_id, "질문1", "")
+    chats.add_exchange(session_id, "질문2", "답변2")
+
+    kept = chats.list_messages(session_id)
+
+    # 빈 쌍만 사라지고 **정상 쌍은 하나도 안 빠진다** (뒤쪽이 진짜 방어선이다).
+    assert [m["content"] for m in kept] == ["질문0", "답변0", "질문2", "답변2"]
+
+
+def test_whitespace_only_answer_counts_as_empty(snapshot):
+    """공백만 든 답변도 화면에서는 똑같이 빈 말풍선이다."""
+    session_id = chats.create_session(snapshot["id"])
+    chats.add_exchange(session_id, "질문", "  \n ")
+
+    assert chats.list_messages(session_id) == []
+
+
+def test_a_question_without_an_answer_survives(snapshot):
+    """마지막 행에서 lead() 가 NULL 이 된다. 조건이 NULL 이면 WHERE 가 조용히 버린다."""
+    session_id = chats.create_session(snapshot["id"])
+    chats.add_exchange(session_id, "질문0", "답변0")
+    with cursor() as cur:
+        cur.execute(
+            "INSERT INTO messages (session_id, role, content) VALUES (%s, %s, %s)",
+            (session_id, "user", "짝 없는 질문"),
+        )
+
+    kept = chats.list_messages(session_id)
+
+    assert [m["content"] for m in kept] == ["질문0", "답변0", "짝 없는 질문"]
+
+
+def test_limit_counts_only_the_kept_messages(snapshot):
+    """limit 은 **거른 뒤** 개수로 세야 한다.
+
+    자른 뒤에 거르면 빈 행이 limit 을 잡아먹어, LLM 에 가는 이력이
+    MAX_HISTORY_MESSAGES 보다 짧아진다.
+    """
+    session_id = chats.create_session(snapshot["id"])
+    chats.add_exchange(session_id, "질문0", "답변0")
+    chats.add_exchange(session_id, "질문1", "답변1")
+    chats.add_exchange(session_id, "질문2", "")  # 최근 4행 안에 든다
+    chats.add_exchange(session_id, "질문3", "답변3")
+
+    # 남는 것은 6개. limit 이 그보다 **작을 때** — 자른 뒤에 거르면 2개만 나온다.
+    assert [m["content"] for m in chats.list_messages(session_id, limit=4)] == [
+        "질문1", "답변1", "질문3", "답변3",
+    ]
+    # limit 이 남는 개수보다 **클 때** — 채우지도 넘치지도 않는다.
+    assert len(chats.list_messages(session_id, limit=10)) == 6
+
+
 def test_messages_go_away_with_the_session(snapshot):
     session_id = chats.create_session(snapshot["id"])
     chats.add_exchange(session_id, "질문", "답변")
