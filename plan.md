@@ -16,6 +16,7 @@ RepoDive — GitHub 레포를 읽고 프로젝트/기술스택을 요약하는 �
 | [05-tasks-a-b.md](docs/log/05-tasks-a-b.md) | 2026-08-19 ~ 08-21 | 과제 A (행 번호) · 과제 B (인덱싱 시간) · 플로우.md 갱신 · 배치 크기 재측정 · 증분 색인 |
 | [06-stage5.md](docs/log/06-stage5.md) | 2026-08-20 ~ 08-21 | Stage 5 (정적분석 결합) · 정적분석 · 코드 상태 · plan.md 분할 · STATUS.md 신설 |
 | [07-answer-quality.md](docs/log/07-answer-quality.md) | 2026-08-21 ~ | 0단계 (답변 품질 판정 기준) · 1단계 (tool use) · 2단계 (인용 화면) · 빈 답변 조사 |
+| [08-production-baseline.md](docs/log/08-production-baseline.md) | 2026-08-24 ~ | 뽑을 수 있는 표본 세기 · 접두사 2배 정정 · 임계값 재역산 · 등재 위치 |
 
 04·05 는 Stage 절이 아니다. 그 시기에 **원문이 실제로 쓴 과제 표기**(1번·2번 과제 / 과제 A·B)를
 파일 이름으로 삼았다. 주제로 분류하지 않았다 — 04 에 DB 이전이, 05 에 행 번호 정확도가 들어 있어
