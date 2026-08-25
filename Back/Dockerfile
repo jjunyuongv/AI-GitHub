@@ -57,6 +57,25 @@ COPY Back/scripts/install_pmd.py ./scripts/
 RUN python scripts/install_pmd.py
 
 # ─────────────────────────────────────────────────────────────────────────
+# **여기서부터 비-root 다.** 린터 셋은 남의 코드를 실행하지 않는 것들로 골랐지만
+# (§정적분석), 뚫렸을 때 할 수 있는 일은 줄여 둔다.
+#
+# **모델을 굽기 전에 바꾼다.** 구운 뒤에 `chown -R` 하면 553MB 가 통째로 복사된
+# 레이어가 하나 더 생겨 이미지가 3GB 로 커진다. 사용자를 먼저 바꾸면 가중치가
+# 처음부터 그 사용자 소유로 떨어진다.
+#
+# 쓰기가 필요한 곳은 둘뿐이라 그 **디렉터리만** 넘긴다(-R 아님):
+#   cache/  ← rate_limit.json (DB 폴백) · models/ (아래에서 굽는다)
+#   logs/   ← runs.jsonl (DB 폴백)
+# node_modules·cache/tools(PMD)·app 은 읽기만 하므로 root 소유로 둔다.
+# ─────────────────────────────────────────────────────────────────────────
+RUN useradd --create-home --uid 10001 app \
+ && mkdir -p /app/logs \
+ && chown app /app/cache /app/logs
+
+USER app
+
+# ─────────────────────────────────────────────────────────────────────────
 # 임베딩 모델을 **빌드 시점에 굽는다.** fastembed 는 import 때가 아니라 첫 embed()
 # 호출 때 가중치를 받으므로, 여기서 한 번 태워야 cache/models/ 에 떨어진다.
 #
@@ -92,6 +111,9 @@ print(f'임베딩 모델 구움: {EMBEDDING_MODEL} dim={len(v)}')"
 COPY Back/app ./app
 
 EXPOSE 8000
+
+# HEALTHCHECK 는 여기 없다 — compose 가 건다(간격·재시도는 배치의 몫이고,
+# 그 값이 `depends_on: condition: service_healthy` 의 기동 순서를 정한다).
 
 # **워커는 하나다.** 인덱싱 큐와 남용 방지 카운터가 프로세스 메모리에 있어서
 # --workers 2 이상이면 상한이 워커 수만큼 늘어나고 색인이 중복된다.

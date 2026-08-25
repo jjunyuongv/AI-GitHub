@@ -1,5 +1,9 @@
 # 로컬 개발용 PostgreSQL. 대화 이력·저장소 스냅샷·코드 청크 임베딩을 담는다.
 #   docker compose up -d
+#
+# **이 파일은 DB 하나뿐이다.** 앱은 호스트에서 uvicorn 으로 돌므로 5432 를 열어 둔다.
+# 배포용(nginx·backend·db 셋)은 저장소 루트의 `docker-compose.prod.yml` 이고,
+# 볼륨이 프로젝트별로 갈려 이쪽 개발 데이터와 섞이지 않는다(그 파일 머리말 참조).
 # 스키마는 앱이 기동할 때 app/db/schema.sql 로 만든다 (마이그레이션 도구 없음).
 #
 # 이미지는 postgres:17 이 아니라 pgvector/pgvector:pg17 이다 — RAG 검색에 vector
