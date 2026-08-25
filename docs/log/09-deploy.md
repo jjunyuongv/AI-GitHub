@@ -90,3 +90,400 @@ bookworm 의 `nodejs` 는 **18.20.4** 인데 `package.json` 의 두 도구가 �
   고른 것들이라(§정적분석) 급하지는 않지만, 배포 전에 볼 것
 - `HEALTHCHECK` 없음 — compose 단계에서 넣는 편이 낫다
 - `Back/tests/` 는 `.dockerignore` 로 뺐다. 이미지 안에서 `pytest` 를 돌릴 수 없다
+
+## 2단계 — 프론트 Nginx 이미지 + 리버스 프록시 (2026-08-25)
+
+브랜치 `feat/docker`. **프론트 이미지와 nginx 설정까지다** — compose(3단계)도 HTTPS·도메인(7단계)도 아직이다.
+
+목표 구성은 입구를 하나로 모으는 것이다:
+
+```
+브라우저 → nginx :80
+             ├ /                                  → 정적 파일 (Vite 빌드 결과)
+             └ /analyze · /chat · /admin · /health → backend:8000
+```
+
+같은 출처에서 나가므로 **브라우저에 CORS 가 없다.** preflight 도 없다.
+
+### 계획
+
+1. 멀티스테이지 Dockerfile → 검증: 최종 이미지에 `node_modules` 가 없다
+2. `VITE_API_BASE=""` 로 빌드 → 검증: 번들에 `127.0.0.1:8000` 문자열이 **없다**
+3. nginx.conf (SPA 폴백 · 프록시 · 타임아웃 · 캐시 헤더) → 검증: 두 컨테이너를 같은 네트워크에 올려 브라우저로 확인
+4. CORS 미들웨어는 **지우지 않는다** → 검증: 로컬 개발(:5173)이 그대로 남는지
+5. 이미지 크기 보고
+
+### 만든 것
+
+- `Front/Dockerfile`
+- `Front/nginx.conf`
+- `Front/.dockerignore` — **컨텍스트가 `Front/` 다.** 저장소 루트의 `.dockerignore` 는
+  루트를 컨텍스트로 쓰는 백엔드 빌드의 것이고, dockerignore 는 **컨텍스트 루트에서만** 읽힌다.
+  백엔드는 `docker build -f Back/Dockerfile .`, 프론트는 `docker build -f Front/Dockerfile Front` 로
+  컨텍스트가 서로 다르다
+
+### `??` 를 확인했다 — 빈 문자열은 폴백하지 않는다
+
+`api.ts:3` 이 `import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000"` 이다.
+`??` 는 **null·undefined 에만** 폴백하므로 빈 문자열은 그대로 남고, `fetch` 가 상대 경로로 나간다.
+(`||` 였다면 빈 문자열이 폴백을 타서 브라우저가 `127.0.0.1:8000` 을 직접 불렀을 것이고,
+컨테이너에서 그 주소는 백엔드가 아니라 **브라우저가 도는 호스트**를 가리킨다)
+
+**다만 `""` 와 "정의 안 됨"은 다르다.** 값이 아예 없으면 `undefined` 가 되어 폴백을 탄다.
+그래서 "ENV 를 박았다"는 검증이 아니고, **구운 번들에 그 문자열이 없는지**가 검증이다.
+실측: 번들의 fetch 가 `` fetch(`/analyze`) ``·`` fetch(`/chat/${e}/file?${n}`) `` 로 나가고
+`127.0.0.1` 은 0건. 해시도 갈렸다(`index-D6OOfPtw.js` → `index-B0SmlxLX.js`).
+
+### 프록시 경로는 `main.py` 를 보고 적었다
+
+추측하지 않았다. `include_router` 넷이 실제로 여는 것:
+
+| 라우터 | 경로 |
+|---|---|
+| `health.router` | `/health` |
+| `analyze.router` | `/analyze` |
+| `chat.router` | `/chat` · `/chat/{id}` · `/chat/{id}/file` · `/chat/{id}/index` |
+| `admin.router` | `/admin` · `/admin/{페이지}` · `/admin/api/*` · `/admin/admin.css` |
+
+정규식 하나(`^/(analyze|chat|admin|health)(/|$)`)로 묶었다. `(/|$)` 로 경계를 박은 것이 핵심이다 —
+없으면 `/chatbot` 같은 프론트 경로가 백엔드로 샌다(실측으로 확인: `/chatbot` → SPA 200).
+
+**`admin.root_router` 의 `/` 는 프록시하지 않는다.** 그건 `/admin` 으로 보내는 리다이렉트인데
+이 구성에서 `/` 는 사용자 화면이다. 관리자는 `/admin` 을 직접 친다.
+
+### X-Forwarded-For 를 덧붙이지 않고 덮는다
+
+처음에 관용구대로 `$proxy_add_x_forwarded_for` 를 썼다가 고쳤다. 그것은 **클라이언트가 보낸
+X-Forwarded-For 뒤에** 실제 IP 를 덧붙이는데, `rate_limit.client_ip()` 는 맨 앞 항목을
+클라이언트로 읽는다(`forwarded.split(",")[0]`). 즉 `TRUST_PROXY_HEADERS=1` 로 켜는 순간
+헤더를 지어내는 것만으로 IP 상한이 뚫린다.
+
+이 nginx 가 유일한 입구이므로 클라이언트가 보낸 값은 버리고 `$remote_addr` 로 덮었다.
+실측: `-H 'X-Forwarded-For: 1.2.3.4'` 를 넣어 보내도 업스트림이 받는 것은 `172.19.0.1`(실제 peer)뿐이다.
+앞에 CDN·LB 를 두게 되면 신뢰 경계를 다시 정해야 한다(7단계).
+
+### 타임아웃 — 기본 60초로는 끊긴다
+
+`proxy_read_timeout` 기본값이 60초다. 채팅은 tool use 로 검색·파일읽기를 돌고 오느라 10초를 넘고,
+`/analyze` 는 GitHub 수집 + 린터 4종 + 요약까지 해서 더 걸린다. 300초로 올렸다.
+**끊겨도 백엔드는 계속 돌아 LLM 비용은 그대로 나간다** — 사용자에게는 504 만 남는다.
+
+검증은 LLM 을 부르지 않고 했다. 65초 뒤에 응답하는 대역 업스트림을 `backend` 이름으로 세우고 재니
+**200 / 65.0초**. 기본값이었다면 60초에 504 가 났을 것이다.
+
+### CORS 는 지우지 않았다 — 프로덕션 값
+
+같은 출처가 되면 `CORSMiddleware` 는 프로덕션에서 할 일이 없다. **그래도 지우지 않는다** —
+로컬 개발은 여전히 Vite `:5173` 과 uvicorn `:8000` 으로 갈라져 있어서 그 경로가 살아 있어야 한다.
+`FRONTEND_ORIGIN` 은 `app.config` 의 환경변수로 그대로 있고 기본값도 `http://localhost:5173` 이다(§1.1).
+
+**프로덕션 `.env` 에 넣을 값:**
+
+| 키 | 값 | 왜 |
+|---|---|---|
+| `FRONTEND_ORIGIN` | 서비스가 실제로 서빙되는 출처 (`http://<호스트>` → 7단계 후 `https://<도메인>`) | 같은 출처라 CORS 요청 자체가 안 생기지만, 나중에 도메인이 갈리면 **이 값이 유일한 허용 목록**이다. `localhost:5173` 을 그대로 두면 그때 조용히 막힌다 |
+| `TRUST_PROXY_HEADERS` | `1` | **안 켜면 IP 상한이 무력해진다.** 실측으로 백엔드가 본 클라이언트는 전부 `172.19.0.3`(nginx 컨테이너 IP) 하나였다 — 상한이 사용자별이 아니라 **전체 공유**가 된다 |
+
+### 검증 결과 (로컬 Docker Desktop 28.3.2)
+
+두 컨테이너를 임시 네트워크(`repodive-tmp`)에 올려서 확인했다. 백엔드는 `--env-file Back/.env`,
+DB 는 안 띄웠다(이번 검증에 필요 없다).
+
+| 항목 | 결과 |
+|---|---|
+| 화면 | `:80` 에서 랜딩이 뜬다 |
+| **요청이 상대 경로로 나가는가** | 브라우저 Network 에 `POST http://localhost/analyze` — `127.0.0.1:8000` 은 없다. 백엔드 로그에도 `POST /analyze` 가 찍힌다 |
+| CORS 오류 | 콘솔에 없음 (같은 출처라 preflight 자체가 안 생긴다) |
+| 새로고침 404 | `/deep/refresh/test` 로 직접 진입해도 앱이 뜬다. curl 로도 200 `text/html` |
+| 경계 | `/chatbot` → SPA (백엔드로 안 샌다) |
+| 프록시 왕복 | 없는 저장소를 넣으니 404 와 함께 백엔드가 만든 한국어 오류 문구가 화면에 그대로 렌더 — 본문까지 왕복한다 |
+| 타임아웃 | 65초 업스트림 → 200 / 65.0초 |
+| X-Forwarded-For | 위조 헤더를 넣어도 업스트림은 실제 peer 만 받는다 |
+| 캐시 헤더 | `/assets/*.js` → `public, max-age=31536000, immutable` · `/`·폴백 → `no-store` |
+| `node_modules` | 최종 이미지에 없다 (dist 381KB 만 들어간다) |
+| 이미지 크기 | **21.1MB** (아래) |
+
+**LLM 은 한 번도 부르지 않았다.** `/analyze` 는 존재하지 않는 저장소로 보내
+`check_repo_access` 에서 404 로 끊었고(요약 호출 앞이다), 타임아웃은 대역 업스트림으로 쟀다.
+
+### 이미지 크기 — 21.1MB (백엔드는 2.39GB)
+
+멀티스테이지라 `node_modules` 도 소스도 안 들어간다. 우리 내용물은 `dist/` **381KB** 가 전부고,
+나머지는 베이스 이미지다. 그래서 크기는 **베이스를 무엇으로 잡느냐**로 결정된다:
+
+| 베이스 | 최종 크기 |
+|---|---|
+| `nginx:alpine` | 93.8MB |
+| `nginx:alpine-slim` | **21.1MB** |
+
+`alpine-slim` 은 njs·geoip2·image-filter 모듈과 perl 이 빠진 판인데 이 설정은 그중 하나도 안 쓴다.
+**같은 검증(위 표)을 둘 다 통과**하는 것을 확인하고 바꿨다.
+
+백엔드 2.39GB 와 대비된다. 백엔드가 큰 이유는 앱이 아니라 **딸린 것들**이고
+(모델 553MB · site-packages 308MB · JVM 184MB · PMD 78MB), 프론트는 딸린 것이 없다.
+
+### 남겨 둔 것
+
+- **`backend` 라는 이름에 묶여 있다.** nginx 는 기동할 때 업스트림 이름을 한 번 풀고 실패하면
+  죽는다. 3단계 compose 에서 서비스 이름을 `backend` 로 두거나 여기를 같이 고칠 것
+- **기동 순서.** 백엔드가 뜨기 전(임베딩 예열 포함 10초 남짓)에는 `:80` 이 502 를 준다.
+  compose 의 `depends_on` + `HEALTHCHECK` 로 다룰 자리다
+- gzip 을 켜지 않았다. 번들이 319KB(gzip 99KB)라 켤 값어치가 있지만 이번 범위가 아니다
+- `error_page` 를 지정하지 않아 502·504 는 nginx 기본 화면이 나간다
+
+## 3단계 — docker-compose.prod.yml (2026-08-25)
+
+브랜치 `feat/docker`. 세 서비스를 한 파일로 세운다. HTTPS·도메인은 아직이다(7단계).
+
+### 계획
+
+1. 서비스 셋(nginx·backend·db) → 검증: `up` 하나로 전부 서는가
+2. 기동 순서를 healthcheck 로 → 검증: db healthy → backend healthy → nginx 순으로 뜨는가
+3. 비밀은 `.env.prod` 로 주입, 예시 파일은 커밋 → 검증: compose 파일에 값이 없다
+4. 비-root → 검증: `id` 가 app, `/app` 에 못 쓴다, 임베딩은 그대로 돈다
+5. 영속 볼륨 → 검증: `down`/`up` 뒤에도 행이 남는가
+
+### 만든 것
+
+- `docker-compose.prod.yml` (저장소 루트 — 백엔드 빌드 컨텍스트가 루트라 여기여야 한다)
+- `.env.prod.example`
+- `.gitignore` 에 `!.env.prod.example` 한 줄 — **`.env.*` 가 예시 파일까지 무시하고 있었다.**
+  기존 예외는 `!.env.example` 딱 하나여서 `.env.prod.example` 은 커밋되지 않았을 것이다
+- `Back/Dockerfile` — 비-root
+- `Back/docker-compose.yml` 머리말에 새 파일로 가는 줄
+
+### 개발용 compose 와의 관계 — 둘 다 남는다
+
+`Back/docker-compose.yml` 은 **DB 하나만** 띄운다. 앱은 호스트에서 uvicorn 으로 돌기 때문에
+5432 를 호스트에 열어 둔 것이고, 그 구성은 개발에 여전히 필요하다. 새 파일은 셋을 다 띄우고
+밖으로는 nginx `:80` 하나만 연다.
+
+**데이터가 섞이지 않는다.** compose 프로젝트 이름이 달라 같은 `pgdata` 가 서로 다른 볼륨이
+된다 — 실측 `back_pgdata` · `aigithubcodereviewer_pgdata`. **동시에 띄워도 충돌하지 않는다**
+(실측). 겹치는 포트가 없다 — 개발은 5432 만, 운영은 80 만 연다.
+
+하나로 합치지 않았다. 합치면 override 파일이 개발용의 `container_name` 과 공개 포트를 도로
+지우는 모양이 되는데, 두 파일이 각자 읽히는 편이 **무엇이 뜨는지** 분명하다.
+
+### 비-root 를 모델 굽기 **앞**에 두었다
+
+`USER` 를 마지막에 두고 `chown -R /app/cache` 하면 **553MB 가 통째로 복사된 레이어가 하나 더
+생긴다**(이미지가 3GB 로 커진다). 사용자를 먼저 바꾸면 가중치가 처음부터 그 사용자 소유로 떨어진다.
+그 대신 모델 레이어 캐시가 깨져 한 번 다시 구웠다. 크기는 그대로 **2.39GB** 다.
+
+쓰기가 필요한 곳은 둘뿐이라 그 **디렉터리만** 넘겼다(`-R` 아님) — `cache/`(rate_limit.json,
+models/)와 `logs/`(runs.jsonl). 둘 다 DB 폴백 경로다. `node_modules`·`cache/tools`(PMD)·`app`
+은 읽기만 하므로 root 소유로 남겼다. 실측으로 `/app` 에는 못 쓴다.
+
+`HEALTHCHECK` 는 Dockerfile 이 아니라 compose 에 뒀다. 간격·재시도는 배치의 몫이고,
+그 값이 `depends_on: condition: service_healthy` 의 기동 순서를 정하기 때문이다.
+이미지에 curl 이 없어(python:3.12-slim) 파이썬으로 `/health` 를 부른다.
+
+### 비밀 주입 — `--env-file` 이 필수다
+
+`docker compose --env-file .env.prod -f docker-compose.prod.yml up -d`
+
+**서비스의 `env_file:` 은 `${VAR}` 치환에 쓰이지 않는다.** compose 는 프로젝트 디렉터리의
+`.env` 나 `--env-file` 로 준 파일만 치환에 쓴다. 그래서 두 곳에 같은 파일을 준다 —
+치환용(`--env-file`)과 백엔드 주입용(`env_file:`).
+
+`DATABASE_URL` 은 `.env.prod` 에 적지 않는다. compose 가 `POSTGRES_PASSWORD` 하나로 조립한다
+(`postgresql://…@db:5432/…`). 접속 문자열과 비밀번호를 둘 다 적으면 **한쪽만 바뀌어 조용히
+인증이 깨진다.** `TRUST_PROXY_HEADERS` 도 compose 가 `1` 로 고정한다 — 값이 배치에 매여 있고
+(nginx 뒤인지 아닌지), `environment:` 가 `env_file:` 보다 이긴다.
+
+`.env.prod.example` 은 `Back/.env.example` 을 대신하지 않는다. 그쪽이 전체 목록이고
+(`test_config.py` 가 `config.py` 와 양방향 대조), 이쪽은 **배포에서 달라지는 것과 비밀만** 담는다.
+
+### 검증 결과 (로컬 Docker Desktop 28.3.2)
+
+| 항목 | 결과 |
+|---|---|
+| 기동 | `up -d` 하나로 셋. 로그 순서가 **db Healthy → backend Started → backend Healthy → nginx Started** |
+| 실행 사용자 | `uid=10001(app)`. `logs/`·`cache/` 는 쓰이고 `/app` 은 `Permission denied` |
+| 임베딩 | 비-root 로 `embed_query` → **dim 1024** (이미지에 구운 가중치를 그대로 쓴다) |
+| 스키마 | 테이블 12개 생성됨(`code_chunks*` 5종 포함) |
+| 볼륨 | 표식 행을 넣고 `down` → `up` → **행이 그대로 있다** |
+| backend 재시작 | `restart backend` 뒤에도 nginx 는 **재시작되지 않았고**(StartedAt 동일) `/health` 200 |
+| 개발 compose 동시 기동 | 충돌 없음. 볼륨 둘이 갈려 있다 |
+| 이미지 | backend 2.39GB · nginx 21.1MB |
+
+### backend 를 **재생성**하면 nginx 가 영구 502 다 — 재현했다
+
+`restart` 는 괜찮지만 **컨테이너를 새로 만들면** 이야기가 다르다. nginx 는 기동할 때 업스트림
+이름을 한 번 풀고 그 IP 를 계속 쓴다.
+
+처음 `up -d --force-recreate backend` 로는 **재현되지 않았다** — IP 가 `172.19.0.3` 그대로
+재할당됐기 때문이다. 그래서 그 주소를 다른 컨테이너가 잡게 해 두고 다시 재생성했다:
+backend 가 `172.19.0.5` 를 받자 **nginx 는 `.3` 을 계속 불러 502 를 준다.** `restart nginx`
+로만 복구된다.
+
+**이것이 걸리는 자리는 배포 그 자체다** — 새 이미지를 올리는 `up -d --build` 가 컨테이너를
+재생성한다. IP 가 그대로면 아무 일도 없고 바뀌면 사이트가 죽는데, **어느 쪽이 될지는 그때의
+주소 할당에 달렸다.** 간헐적이라 더 나쁘다.
+
+지금은 **운영 규칙으로 둔다** — backend 를 재생성했으면 `restart nginx`. 설정으로 없애려면
+`resolver 127.0.0.11 valid=10s;` + `proxy_pass $변수` 로 요청 시점에 다시 풀게 해야 하는데,
+그러면 **이름이 틀렸을 때 기동에서 죽지 않고 런타임 502 가 된다**(2단계에서 일부러 남겨 둔
+성질이다). 어느 쪽을 택할지는 별도로 정한다.
+
+### 남겨 둔 것
+
+- 위의 재생성 문제 — 규칙으로 둘지 `resolver` 로 바꿀지
+- nginx 에 healthcheck 가 없다. 정적 파일이라 죽을 일이 적지만 셋 중 하나만 없다
+- 로그 로테이션·백업이 없다. `pgdata` 볼륨을 어디로 어떻게 뜰지는 정해지지 않았다
+- **실제 저장소 분석·채팅 완주는 아직 안 했다**(과금). 예상 비용을 보고하고 멈췄다
+
+### 재생성 문제를 `resolver` 로 되돌렸다 (같은 날)
+
+바로 위에서 "운영 규칙으로 둔다"고 적은 것을 뒤집는다. **2단계에서 일부러 남긴 성질
+(이름이 틀리면 기동에서 죽는다)을 3단계에서 되돌린 것이다.**
+
+```nginx
+resolver 127.0.0.11 valid=10s;
+set $upstream backend:8000;
+proxy_pass http://$upstream;
+```
+
+**이유는 빈도다 — 오타는 한 번이지만 재생성은 배포마다 일어난다.** 오타는 처음 쓸 때
+한 번 걸리고 끝나는 문제인데, 컨테이너 재생성은 새 이미지를 올릴 때마다 일어나고
+그때마다 주소가 바뀔 수 있다. 기동 시 실패는 **눈에 띄지만**, 배포 뒤 502 는 간헐적이라
+"이번엔 왜 죽었지"가 된다.
+
+리터럴 `proxy_pass` 는 `resolver` 를 적어도 기동 때 한 번만 푼다. **변수로 넘겨야**
+요청 시점에 다시 푼다.
+
+#### 검증 1 — IP 가 바뀌어도 502 가 없다
+
+재현했던 절차를 그대로 다시 밟았다(backend 를 세우고, 그 주소를 다른 컨테이너가 잡게 한 뒤
+재기동). backend 가 **172.19.0.5 → 172.19.0.6** 으로 옮겨갔고, 1초 간격 20회가 **전부 200**
+이었다. 리터럴이었을 때 같은 절차에서 영구 502 였다.
+
+정리하면서 backend 가 또 **.6 → .4** 로 옮겨갔는데 그때도 바로 200 이었다.
+
+#### 검증 2 — `valid=10s` 창은 실재하지만 짧다
+
+위 절차로는 502 가 한 번도 안 나왔다. **재기동 자체가 TTL 보다 오래 걸리기 때문이다** —
+새 backend 가 답할 수 있게 되기까지 10초 남짓이라, 그때는 캐시가 이미 만료돼 있다.
+**정상 배포에서는 이 창이 백엔드 자신의 다운타임에 가려진다.**
+
+창을 보려면 이름이 **즉시** 다른 주소로 옮겨가야 해서, 미리 띄워 둔 대역 서버를
+`docker network connect --alias backend` 로 붙이고 옛 주소는 다른 컨테이너가 잡게 했다.
+
+| 시각 | 일 |
+|---|---|
+| 12:53:42 | 요청 한 번 — nginx 가 `backend` → `.6` 으로 해석(캐시 데움) |
+| 12:53:45 | 교체 완료. `.6` 은 아무도 안 듣고, 이름은 `.7` 을 가리킨다 |
+| 12:53:45 | **502** — nginx 가 아직 `.6` 을 부른다 |
+| 12:53:47 | 200 — 다시 풀어서 `.7` 로 간다 |
+
+**약 2초.** 상한은 10초이고 그 사이 실패는 502 다. 운영상 문제로 보지 않는다 —
+그 창이 열리려면 새 백엔드가 **TTL 이 남아 있는 동안에** 답할 준비가 돼야 하는데
+(위처럼 대역을 미리 띄워 두지 않는 한) 기동이 그보다 오래 걸린다. 값을 더 줄이면
+DNS 질의만 늘고 얻는 것이 없다.
+
+#### 검증 3 — 오타는 이제 아무도 안 잡는다
+
+서비스명을 `backendd` 로 틀리게 하고 같은 이미지로 둘을 띄워 비교했다.
+
+| 설정 | 결과 |
+|---|---|
+| **변수판(지금)** | 컨테이너가 **정상 기동**한다. 정적 파일 `/` 는 200, 백엔드 경로는 **502**. 로그에 `backendd could not be resolved (2: Server failure)` |
+| 리터럴판(옛) | 컨테이너가 **ExitCode 1 로 죽는다**. `[emerg] host not found in upstream "backendd"` |
+
+**`depends_on` 은 이것을 잡지 않는다.** 그것은 compose **서비스 이름**을 가리키는 것이고
+nginx.conf 안에 무엇이 적혔는지와 무관하다. compose 는 오타를 모른 채 `up` 을 끝낸다.
+
+**즉 오타 방어가 사라졌다.** 그리고 더 나쁜 것은 **정적 파일이 200 이라는 점**이다 —
+화면은 뜨는데 API 만 죽으므로 "떴다"로 오판하기 쉽다.
+nginx 에 healthcheck 를 붙이되 **프록시되는 경로(`/health`)로** 걸면 compose 단계에서
+다시 잡을 수 있다(`/` 로 걸면 정적 파일이 200 이라 통과해 버린다). 아직 안 붙였다.
+
+### nginx healthcheck 를 `/health` 로 붙였다 (같은 날)
+
+검증 3 에서 잃은 오타 방어를 compose 단계에서 되찾는다. 한 줄이다.
+
+```yaml
+test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/health"]
+interval: 10s   timeout: 5s   retries: 3   start_period: 20s
+```
+
+**`/` 로 걸면 무의미하다.** `/` 는 정적 파일이라 nginx 혼자서 200 을 낸다 — 업스트림
+이름이 틀렸든 백엔드가 죽었든 통과한다. **프록시되는 경로여야** 그 너머를 본다.
+이 구성에서 "화면은 뜨는데 API 만 죽은" 상태가 실제로 가능하다는 것이 검증 3 의 결과다.
+
+**호스트는 `localhost` 가 아니라 `127.0.0.1` 이다.** nginx 는 `listen 80`(IPv4)뿐인데
+busybox wget 은 `localhost` 를 `::1` 로 먼저 풀어 `can't connect to remote host:
+Connection refused` 가 난다(실측). 컨테이너 안에서 재보지 않았으면 healthcheck 가
+**영원히 실패하는데 원인이 백엔드처럼 보였을** 것이다.
+
+| 확인 | 결과 |
+|---|---|
+| 정상 | `starting` → **16초에 healthy**, 이후 계속 healthy |
+| 서비스명 오타(`backendd`) | **64초에 unhealthy.** 로그에 `wget: server returned error: HTTP/1.1 502 Bad Gateway`. (start_period 20s + 실패 3회 × 10s) |
+| backend 재생성 | **흔들리지 않는다.** 백엔드가 10초 안에 healthy 로 돌아와 연속 실패 3회가 안 된다 |
+| backend 를 오래 정지 | 48초에 unhealthy → 다시 띄우니 **16초에 healthy 로 복귀**. 갇히지 않는다 |
+
+재시도 설정의 균형이 여기 있다 — **정상 배포(≈10초 공백)는 넘기고, 진짜 끊긴 것
+(30초 이상)은 잡는다.** 부수 효과로 10초마다 프록시 요청이 하나 나가서 백엔드
+접근 로그에 남고, 그 요청이 DNS 캐시를 계속 데워 둔다.
+
+### 과금 검증 — 실제 저장소 하나를 끝까지 (2026-08-25)
+
+운영 스택(compose) 위에서 브라우저로 `teaey/apns4j` 를 분석하고 질문 하나를 했다.
+**총 $0.12212** 썼다.
+
+**저장소 이름을 정정했다.** 지시는 `jjunyuongv/apns4j` 였는데 그것은 존재하지 않고
+(404, 그 계정 공개 저장소 목록에도 없다), 평가셋의 것은
+`search_eval_dataset.py:314` 의 `APNS4J_REPO = ("teaey", "apns4j")` 다. 그쪽으로 했다.
+**404 는 `check_repo_access` 에서 끊겨 과금되지 않았다** — LLM 호출 앞이다.
+
+| 확인 | 결과 |
+|---|---|
+| `/analyze` 완주 | 200. 요약·기술스택·구조·코드 상태가 화면에 렌더 |
+| 정적분석 | **컨테이너 안에서 PMD 가 돌았다** — `EmptyCatchBlock` 4건 · `AssignmentInOperand`/`NullAssignment` 각 4건 · Java 31파일 검사 |
+| 색인 | `completed` · **청크 0개**. 전체 주입 임계값 이하라 검색을 안 만드는 경로(§2.2)를 그대로 탔다 |
+| 보관 소스 | `snapshot_source_files` **32행 / 71,291바이트** |
+| 도구 | `round_trips = 0` — **도구가 안 붙었다.** 전체 주입 저장소의 정답이다 |
+| `stop_reason` | 두 행 다 `end_turn`. **새 볼륨인데 열이 있다** — 기동 시 스키마가 현행으로 적용됐다 |
+| 답변 | SSL 소켓 생성 위치를 파일·행 번호와 함께 짚었다(`SecuritySocketFactory` 100-112행 등) |
+| **클라이언트 IP** | `rate_limit_hits.ip` = **172.19.0.1**(게이트웨이, 즉 nginx 가 본 실제 peer). nginx 컨테이너 IP 는 172.19.0.4 다 — **짝이 돌고 있다.** 짝이 깨졌으면 172.19.0.4 로 찍혔을 것이다 |
+
+#### 비용 — 예상 $0.027 대 실제 $0.12212
+
+| 경로 | 예상 | 실제 | 토큰 |
+|---|---|---|---|
+| analyze | $0.019 | **$0.01525** | in 2,868 · out 673 · cache write 1,115 |
+| chat | $0.008 | **$0.10687** | in 706 · out 793 · **cache write 39,010** |
+
+**analyze 는 맞았고 chat 이 13배 틀렸다.** 원인은 `cache_write_tokens` 39,010 이다 —
+전체 주입 저장소의 **첫 질문**은 소스 71KB 를 캐시에 쓰면서 그 값을 1.25배로 문다.
+$0.008 은 **같은 세션의 이어지는 질문**(캐시 읽기) 값이지 첫 질문 값이 아니다.
+
+**§5.1 의 chat 평균 $0.02353(최대 $0.1004)에도 이 구분이 없다.** 첫 질문과 이어지는 질문을
+같은 표본에 섞으면 평균은 세션 길이에 따라 흔들린다. 최악값 $0.12 를 미리 말해 둔 것이
+맞았던 이유도 이것이다.
+
+#### 인용 링크가 화면에 안 뜬다 — 프론트 결함을 찾았다
+
+서버는 **인용 7건**을 정확히 만들었다(`GET /chat/{id}` 에 path·행 범위·marker·offset 이 다 있다).
+그런데 화면에는 `span.citation` 이 0개, 답변 아래 '근거' 목록도 0개다.
+
+원인은 `Front/src/Chat.tsx:212` 다:
+
+```js
+const { answer } = await res.json();          // ← citations 를 안 꺼낸다
+setMessages(prev => [...prev,
+  { role: "user", content: text },
+  { role: "assistant", content: answer },     // ← 그래서 citations 가 없는 메시지가 쌓인다
+]);
+```
+
+`POST /chat` 응답에는 `citations` 가 들어 있고(`schemas.py` 의 `ChatResponse`),
+이력 복원 경로(`App.tsx:78` → `body.messages`)는 그것을 그대로 싣는다. **즉 새로고침하면
+링크가 살아나고 방금 받은 답변에서만 안 뜬다.**
+
+**이것이 `onMiss` 가 줄곧 0건이던 이유이기도 하다**(STATUS §4). 라이브 경로에는 애초에
+인용이 0건이라 **놓칠 것이 없다.** 감시 경로가 안 도는 게 아니라 **도달하지 않는다.**
+
+고치는 것은 한 줄이지만 **이번 단계 범위 밖이라 손대지 않았다.** §4 에 올린다.

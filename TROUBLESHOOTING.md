@@ -176,6 +176,19 @@ RepoDive 를 만들며 **실제로 겪은** 문제와 해결을 한곳에 모은
 | `App → Chat → App` 순환 import | 공용 타입을 App 에서 export | `api.ts` 로 분리 |
 | 랜딩에 스크롤바가 생김 | `min-height:100vh` + padding | `box-sizing: border-box` |
 | 실패한 질문이 새로고침 후 사라짐 | 백엔드는 **성공 후에만** 저장하는데 화면엔 남김 | 전송 중 질문은 `messages` 가 아니라 `pending` 에 |
+| **방금 받은 답변에만 인용 링크가 없다. 새로고침하면 생긴다** | `Chat.tsx:212` 가 `const { answer } = await res.json()` 로 `citations` 를 안 꺼낸다. 이력 복원 경로는 싣는다 | 응답에서 `citations` 를 함께 꺼내 메시지에 싣는다. **`onMiss` 가 0건인 것도 이 때문이다** — 라이브 경로엔 놓칠 인용 자체가 없다 |
+| 전체 주입 저장소의 **첫 질문**이 예상보다 10배 비싸다 | 소스 전체를 캐시에 쓰는 `cache_write` 를 1.25배로 문다 (실측 39,010토큰 → $0.107) | 첫 질문과 이어지는 질문을 **다른 값으로** 잡는다. $0.008 대는 캐시 읽기(이어지는 질문) 값이다 |
+| 프론트 컨테이너가 안 뜬다 (`host not found in upstream "backend"`) | nginx 는 **기동할 때** `proxy_pass` 의 호스트명을 한 번 푼다. 못 풀면 설정 오류로 죽는다 — 백엔드가 늦은 게 아니라 **이름이 없으면** 안 뜬다 | 같은 네트워크에 `backend` 이름(컨테이너 이름·`--network-alias`·compose 서비스명)이 **먼저** 있어야 한다. 백엔드를 다시 만들어 IP 가 바뀌면 nginx 도 `docker restart` |
+| `:80` 이 502 | 백엔드가 아직 기동 중(임베딩 예열까지 10초 남짓) | 기다린다. `docker logs backend` 에 `Application startup complete` 가 뜬 뒤가 정상. compose 에서는 `depends_on` + `HEALTHCHECK` 자리 |
+| 프록시 요청이 60초에 잘린다 | nginx `proxy_read_timeout` 기본값이 60초. 채팅(tool use)·`/analyze` 는 그보다 길다 | 넉넉히 올린다(300s). **끊겨도 백엔드는 계속 돌아 LLM 비용은 그대로 나간다** |
+| 구운 번들이 여전히 `127.0.0.1:8000` 을 부른다 | `VITE_API_BASE` 가 **정의되지 않아** `undefined` → `??` 폴백. 빈 문자열은 폴백하지 않지만 "없음"은 한다 | 이미지에 `ENV VITE_API_BASE=""` 를 박고, **번들에 그 문자열이 없는지 grep 으로** 확인한다. ENV 를 적은 것은 검증이 아니다 |
+| `TRUST_PROXY_HEADERS=1` 인데 IP 상한이 뚫린다 | nginx 가 `$proxy_add_x_forwarded_for` 로 **클라이언트가 보낸 헤더 뒤에** 실제 IP 를 덧붙이는데, `client_ip()` 는 맨 앞을 읽는다 | 유일한 입구라면 `proxy_set_header X-Forwarded-For $remote_addr;` 로 **덮는다.** 앞에 CDN·LB 가 생기면 신뢰 경계를 다시 정할 것 |
+| **backend 를 재생성한 뒤 사이트가 계속 502** | 리터럴 `proxy_pass` 는 기동 때 이름을 한 번만 풀고 그 IP 를 계속 쓴다. `restart` 는 IP 가 유지돼 괜찮지만 **재생성은 주소가 바뀔 수 있고**(실측 `.3` → `.5`) `up -d --build` 가 바로 그 경로다 | **`resolver 127.0.0.11 valid=10s;` + `set $upstream …` + `proxy_pass http://$upstream;`** — 변수로 넘겨야 요청 시점에 다시 푼다(리터럴은 resolver 를 적어도 한 번만 푼다). `Front/nginx.conf` 가 그렇게 되어 있다. 되돌리면 재발한다 |
+| 이름을 바꾼 직후 몇 초간 502 | `valid=10s` 동안은 옛 주소를 문다 (실측 약 2초 뒤 복구) | 정상 배포에서는 백엔드 기동이 TTL 보다 길어 가려진다. 값을 더 줄이면 DNS 질의만 는다 |
+| **upstream 이름을 오타 냈는데 컨테이너가 정상 기동한다** | 변수 `proxy_pass` 는 기동 때 이름을 안 푼다. **`depends_on` 은 compose 서비스 이름을 가리킬 뿐 nginx.conf 안을 모른다** | 런타임 502 로만 드러난다(로그: `… could not be resolved`). **정적 파일은 200 이라 화면은 떠서 더 헷갈린다** — nginx healthcheck 를 걸려면 `/` 가 아니라 **프록시되는 `/health`** 로 걸 것 |
+| compose 가 `${VAR} 가 비었다`며 뜨지 않는다 | 서비스의 `env_file:` 은 **`${VAR}` 치환에 쓰이지 않는다.** 치환은 프로젝트 디렉터리의 `.env` 나 `--env-file` 만 본다 | `docker compose --env-file .env.prod -f docker-compose.prod.yml …` 로 **둘 다** 준다 |
+| 새 `.env.*.example` 이 커밋되지 않는다 | `.gitignore` 의 `.env.*` 가 잡는데 예외는 `!.env.example` **하나뿐**이었다 | 예시 파일을 만들 때 `!` 줄을 같이 추가한다. `git check-ignore -v <파일>` 로 확인 |
+| 비-root 로 바꿨더니 이미지가 3GB | `USER` 를 마지막에 두고 `chown -R` 하면 모델 553MB 가 통째로 복사된 레이어가 생긴다 | **사용자를 무거운 것 굽기 앞에** 두고, 쓰기가 필요한 **디렉터리만** `chown`(-R 아님) |
 
 ## 테스트 · 검증 · 도구
 
@@ -211,6 +224,7 @@ RepoDive 를 만들며 **실제로 겪은** 문제와 해결을 한곳에 모은
 | **백엔드가 기동에 "성공"했는데 대화만 503** | Docker Desktop 자체가 꺼져 있었다. 앱은 스키마 적용 실패를 **경고 한 줄로만** 남기고 정상 기동한다 | 웹을 열기 전에 `docker compose up -d` 가 실제로 healthy 가 됐는지 본다. 기동 로그에 "스키마를 적용하지 못했습니다" 가 있으면 DB 없이 뜬 것이다 |
 | **`pytest` 통과 수가 478 → 357 로 줄었다. 실패는 0건이고 skip 이 14 → 135 로 늘었다** | Docker 미기동. DB 가 필요한 121건이 `PostgreSQL 에 붙을 수 없어 건너뜁니다` 로 빠졌다. **통과 수만 보면 회귀처럼 읽히지만 회귀가 아니다** — 회귀면 failed 가 뜬다 | **skip 개수를 먼저 본다.** 실패 0건 + skip 급증이면 환경이다. `cd Back; docker compose up -d` 후 healthy 를 확인하고 재실행하면 478 로 돌아온다. 사유는 `-rs`. 다른 Docker 두 행(503 · 대화 사라짐)은 **사용자가 겪는 증상**이고 이건 **개발자가 겪는 증상**이다 |
 | **문서를 한 줄 고쳤는데 diff 가 파일 전체로 뜬다** | 개행 정규화. `autocrlf=true` 인데 워킹트리 개행이 **파일마다 다르다** — `plan.md`·`CLAUDE.md` 는 CRLF, `TROUBLESHOOTING.md`·`트러블슈팅.md`·`플로우.md` 는 LF | 고치기 전에 **그 파일의** 개행을 확인한다. 도구를 Python 으로 바꿔도 안 풀린다 — `.gitattributes` 로 현상 고정. 상세는 [06-stage5.md](docs/log/06-stage5.md) 의 분할 절 |
+| **한 줄만 지웠는데 파일 전체가 CRLF → LF 로 바뀐다** | Git Bash 의 `sed -i` 가 텍스트 모드로 읽고 써서 CR 을 전부 흘린다. `grep $'\r'` 도 `file` 도 CR 을 못 보여 줘서 "안 바뀐 것처럼" 보인다 | **CRLF 문서에 `sed -i` 를 쓰지 않는다**(PowerShell 의 `File.AppendAllText`/`ReadAllText` 로 쓴다). 확인은 `cat -A` 의 `^M$` 와 `git diff --numstat`(전체 행이 바뀌면 정규화다). 이미 저질렀으면 `git checkout -- <파일>` |
 
 ---
 
