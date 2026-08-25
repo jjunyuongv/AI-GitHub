@@ -176,7 +176,9 @@ RepoDive 를 만들며 **실제로 겪은** 문제와 해결을 한곳에 모은
 | `App → Chat → App` 순환 import | 공용 타입을 App 에서 export | `api.ts` 로 분리 |
 | 랜딩에 스크롤바가 생김 | `min-height:100vh` + padding | `box-sizing: border-box` |
 | 실패한 질문이 새로고침 후 사라짐 | 백엔드는 **성공 후에만** 저장하는데 화면엔 남김 | 전송 중 질문은 `messages` 가 아니라 `pending` 에 |
-| **방금 받은 답변에만 인용 링크가 없다. 새로고침하면 생긴다** | `Chat.tsx:212` 가 `const { answer } = await res.json()` 로 `citations` 를 안 꺼낸다. 이력 복원 경로는 싣는다 | 응답에서 `citations` 를 함께 꺼내 메시지에 싣는다. **`onMiss` 가 0건인 것도 이 때문이다** — 라이브 경로엔 놓칠 인용 자체가 없다 |
+| **방금 받은 답변에만 인용 링크가 없다** | `Chat.tsx` 가 `POST /chat` 응답에서 `citations` 를 안 꺼냈다. 이력 복원 경로는 싣는다 | 응답에서 `citations` 를 함께 꺼내 메시지에 싣는다(고침). **트리 수준 검증은 이걸 못 잡는다** — 플러그인이 받은 인용은 재지만 전달되는지는 안 잰다 |
+| **인라인 인용 링크가 0개로 보인다** | `span.citation` 을 셌다. 플러그인은 hast 에 `span` 을 만들지만 `Chat.tsx` 의 `components.span` 이 **`<button className="citation">`** 으로 그린다 | 태그 무관하게 `.citation` 을 센다. **관측 도구의 오류를 결함으로 읽으면 없는 원인을 쫓게 된다**(빌드 탓까지 의심했다) |
+| `onMiss` 가 늘 0이다 | 두 이유가 겹쳤다 — 예전엔 라이브 경로에 인용이 0건이라 입력이 없었고, 지금은 `citationsIn` 이 **노드를 못 고른 유실**을 `onMiss` 로 안 넘긴다 | 카운터 0을 "문제 없음"으로 읽지 않는다. **정말 0 / 입력 미도달 / 그 종류를 안 셈** 셋을 가른다 (STATUS §4) |
 | 전체 주입 저장소의 **첫 질문**이 예상보다 10배 비싸다 | 소스 전체를 캐시에 쓰는 `cache_write` 를 1.25배로 문다 (실측 39,010토큰 → $0.107) | 첫 질문과 이어지는 질문을 **다른 값으로** 잡는다. $0.008 대는 캐시 읽기(이어지는 질문) 값이다 |
 | 프론트 컨테이너가 안 뜬다 (`host not found in upstream "backend"`) | nginx 는 **기동할 때** `proxy_pass` 의 호스트명을 한 번 푼다. 못 풀면 설정 오류로 죽는다 — 백엔드가 늦은 게 아니라 **이름이 없으면** 안 뜬다 | 같은 네트워크에 `backend` 이름(컨테이너 이름·`--network-alias`·compose 서비스명)이 **먼저** 있어야 한다. 백엔드를 다시 만들어 IP 가 바뀌면 nginx 도 `docker restart` |
 | `:80` 이 502 | 백엔드가 아직 기동 중(임베딩 예열까지 10초 남짓) | 기다린다. `docker logs backend` 에 `Application startup complete` 가 뜬 뒤가 정상. compose 에서는 `depends_on` + `HEALTHCHECK` 자리 |

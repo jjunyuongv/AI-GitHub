@@ -209,11 +209,14 @@ export default function ChatPanel({ sessionId, initialMessages }: Props) {
         const body = await res.json().catch(() => ({}));
         throw new Error(errorMessage(body.detail, res.status, "답변을 받지 못했습니다"));
       }
-      const { answer } = await res.json();
+      // **citations 를 함께 꺼낸다.** 안 꺼내면 방금 받은 답변만 인라인 링크도 '근거'
+      // 목록도 없는 채로 쌓인다 — 이력 복원 경로(App.tsx)는 싣고 있어서 새로고침하면
+      // 살아나므로, 라이브 경로에서만 조용히 사라진다.
+      const { answer, citations } = await res.json();
       setMessages((prev) => [
         ...prev,
         { role: "user", content: text },
-        { role: "assistant", content: answer },
+        { role: "assistant", content: answer, citations },
       ]);
     } catch (err) {
       // 저장되지 않은 질문은 입력창으로 되돌린다 (화면과 DB 가 어긋나지 않게).
