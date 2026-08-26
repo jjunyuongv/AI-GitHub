@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from app.api import analyze as analyze_api
 from app.main import app
-from app.services import rate_limit, run_log, summary_cache
+from app.services import allowlist, rate_limit, run_log, summary_cache
 
 ACCESS = {
     "owner": "React",
@@ -375,3 +375,61 @@ def test_session_failure_does_not_break_the_response(client, llm_calls, monkeypa
 
     assert res.status_code == 200
     assert res.json()["session_id"] is None
+
+
+# --- 허용 목록 ---------------------------------------------------------------
+#
+# **403 만 보면 부족하다.** 거절이 GitHub·LLM 앞에서 일어났는지는 응답 코드에 안 나온다 —
+# 이미 GET /repos 를 부르고 나서 403 을 내도 응답은 똑같다. 그래서 두 함수의 **호출 여부**를
+# 함께 센다. 거절이 뒤로 밀리면 토큰 없는 환경(시간당 60회)에서 거절만으로 한도가 마른다.
+
+
+@pytest.fixture
+def github_calls(monkeypatch):
+    """check_repo_access 호출을 세는 대역. autouse 픽스처의 것을 덮어쓴다."""
+    calls = []
+
+    def counting(owner, repo):
+        calls.append((owner, repo))
+        return dict(ACCESS)
+
+    monkeypatch.setattr(analyze_api, "check_repo_access", counting)
+    return calls
+
+
+def test_목록_밖_저장소는_github_도_llm_도_부르기_전에_거절한다(
+    client, llm_calls, github_calls, monkeypatch
+):
+    monkeypatch.setattr(allowlist, "ALLOWED", ("alpha/one", "beta/two"))
+
+    res = _analyze(client)  # facebook/react — 목록에 없다
+
+    assert res.status_code == 403
+    assert "alpha/one" in res.json()["detail"]
+    assert github_calls == []  # GET /repos 를 쓰지 않았다
+    assert llm_calls == []
+
+
+def test_목록_안_저장소는_그대로_통과한다(client, llm_calls, github_calls, sessions, monkeypatch):
+    # 차단만 확인하면 "전부 거절" 로 바뀌어도 위 테스트가 통과한다.
+    monkeypatch.setattr(allowlist, "ALLOWED", ("facebook/react", "beta/two"))
+    monkeypatch.setattr(summary_cache, "get", lambda access: None)
+    monkeypatch.setattr(summary_cache, "put", lambda access, **kwargs: dict(SNAPSHOT))
+
+    res = _analyze(client)
+
+    assert res.status_code == 200
+    assert github_calls == [("facebook", "react")]
+    assert len(llm_calls) == 1
+
+
+def test_목록이_비면_임의_저장소가_통과한다(client, llm_calls, github_calls, sessions, monkeypatch):
+    """로컬 개발이 여기에 기댄다 — .env 에 값을 안 적으면 지금까지처럼 동작한다."""
+    monkeypatch.setattr(allowlist, "ALLOWED", ())
+    monkeypatch.setattr(summary_cache, "get", lambda access: None)
+    monkeypatch.setattr(summary_cache, "put", lambda access, **kwargs: dict(SNAPSHOT))
+
+    res = _analyze(client)
+
+    assert res.status_code == 200
+    assert github_calls == [("facebook", "react")]

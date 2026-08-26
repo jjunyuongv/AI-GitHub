@@ -56,6 +56,7 @@
 | `IP_RATE_LIMIT` | `'20'` | `app.config` | `IP_RATE_LIMIT` |
 | `IP_RATE_WINDOW_SECONDS` | `'3600'` | `app.config` | `IP_RATE_WINDOW_SECONDS` |
 | `TRUST_PROXY_HEADERS` | `'0'` | `app.config` | `TRUST_PROXY_HEADERS` |
+| `ALLOWED_REPOS` | `''` | `app.config` | `ALLOWED_REPOS` |
 
 기본값이 표현식인 것의 실제 크기 — `MAX_ARCHIVE_BYTES` 500MB ·
 `MAX_SOURCE_FILE_BYTES` 200KB · `FULL_INJECTION_MAX_SOURCE_BYTES` 500KB ·
@@ -264,6 +265,20 @@ LLM 을 다시 부를 필요가 없다.
   보인다). **둘 다 실측했다.** 값은 `docker-compose.prod.yml` 이 `1` 로 고정하고 덮어쓰기는
   `Front/nginx.conf` 에 있다 (`Back/app/services/rate_limit.py` 의 `client_ip`).
   로컬 개발은 프록시가 없어 둘 다 필요 없다 — TCP 연결 IP 를 그대로 쓴다.
+- **`/admin` 에는 인증이 없다. 네트워크 경계가 인증을 대신한다.** `Back/app/api/admin.py`
+  에 인증이 한 줄도 없고, 관리자 경로는 **요약 캐시를 보지 않고 항상 LLM 을 부르며
+  남용 제한도 걸지 않는다**(`_run_and_log`). 그래서 **공개 경로에 노출하는 순간 누구나
+  임의 저장소를 임의 모델로 부를 수 있고**, `/analyze` 에 건 허용 목록도 함께 우회된다.
+  지금은 `Front/nginx.conf` 의 프록시 정규식에서 빠져 밖에서 오는 길이 없다 —
+  관리자 페이지는 **컨테이너 네트워크 안에서만** 닿는다(`docker compose exec backend …`
+  또는 다른 컨테이너에서 `backend:8000/admin`). **SSH 터널만으로는 안 닿는다** —
+  backend 가 호스트로 포트를 열지 않기 때문이다.
+  **되돌리기 쉬운 형태다**(정규식에 `admin` 한 단어). 다시 넣는 것은 인증을 붙인
+  뒤에 할 일이다(§4 '관리자 인증').
+- **허용 목록은 기본이 꺼짐이다.** `ALLOWED_REPOS` 가 비면 임의 저장소를 받는다
+  (`Back/app/services/allowlist.py`). 로컬 개발이 여기에 기대지만, 뒤집어 말하면
+  **배포에서 이 값을 안 채우면 방어가 없는 것과 같고 아무 신호도 나지 않는다.**
+  값은 `.env.prod` 가 정한다 — 저장소 이름은 `app/` 안에 없다(§2.3, CLAUDE.md §7).
 
 ### 2.2 색인이 도는 방식
 
@@ -512,6 +527,18 @@ LLM 을 다시 부를 필요가 없다.
      기동 정리와 자동 재시작은 같은 방침의 앞뒤다.
 - **의도적 중복 2곳** — `indexer.TOP_K = 8` 과 `db/chunks.search(limit=8)`,
   청크 부스러기 하한 `40` 이 `Back/app/core/chunker.py` 두 곳에. 한쪽만 고치면 조용히 어긋난다.
+- **관리자 인증 — 지금은 네트워크 경계가 대신한다.** `/admin` 이 nginx 프록시 경로에서
+  빠져 밖에서 오는 길이 없다(§2.1). **여러 사람이 쓰거나 관리자 페이지를 외부에 열
+  필요가 생기면** 인증이 필요해진다. 선택지와 함께 움직이는 것:
+
+  | 안 | 하는 일 | 함께 움직이는 것 |
+  |---|---|---|
+  | `ADMIN_TOKEN` | 헤더·쿠키로 토큰 검사 | `config.py` · `.env.example` · `api/admin.py` 전 라우트 · `templates/` HTML 6개(브라우저가 토큰을 실어야 한다) · §1.1 표 |
+  | nginx 기본인증 | `auth_basic` + `htpasswd` | `Front/nginx.conf` · compose 볼륨 하나 · 비밀 배포 경로. **백엔드는 무변경** |
+  | OAuth | 외부 IdP 위임 | 콜백 URL · 세션 저장소 · 외부 의존. 지금 규모에 과하다 |
+
+  **`ports` 를 여는 순간 이 과제가 먼저 온다** — SSH 터널을 쓰려고 backend 에
+  `127.0.0.1:8000:8000` 을 붙이면 그 호스트에서는 인증 없는 관리자 경로가 열린다.
 
 ---
 

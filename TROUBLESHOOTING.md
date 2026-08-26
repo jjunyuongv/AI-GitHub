@@ -191,6 +191,8 @@ RepoDive 를 만들며 **실제로 겪은** 문제와 해결을 한곳에 모은
 | compose 가 `${VAR} 가 비었다`며 뜨지 않는다 | 서비스의 `env_file:` 은 **`${VAR}` 치환에 쓰이지 않는다.** 치환은 프로젝트 디렉터리의 `.env` 나 `--env-file` 만 본다 | `docker compose --env-file .env.prod -f docker-compose.prod.yml …` 로 **둘 다** 준다 |
 | 새 `.env.*.example` 이 커밋되지 않는다 | `.gitignore` 의 `.env.*` 가 잡는데 예외는 `!.env.example` **하나뿐**이었다 | 예시 파일을 만들 때 `!` 줄을 같이 추가한다. `git check-ignore -v <파일>` 로 확인 |
 | 비-root 로 바꿨더니 이미지가 3GB | `USER` 를 마지막에 두고 `chown -R` 하면 모델 553MB 가 통째로 복사된 레이어가 생긴다 | **사용자를 무거운 것 굽기 앞에** 두고, 쓰기가 필요한 **디렉터리만** `chown`(-R 아님) |
+| **`up -d --build` 를 돌렸는데 설정 변경이 반영되지 않는다** | 이미지는 새로 구워지고 `Built` 도 찍히는데 **컨테이너가 옛 이미지로 계속 돈다**(실측: backend·nginx 둘 다). 빌드도 성공, 스택도 healthy 라 **적용된 것처럼 보인다** — 보안 수정에서는 조용히 열려 있는 상태가 된다 | `--force-recreate` 를 붙인다. 확인은 `docker inspect <컨테이너> --format '{{.Image}}'` 와 `docker image inspect <이미지>` 의 ID 대조 — 로그·응답 코드로는 안 갈린다 |
+| **nginx 프록시 경로에서 뺀 경로가 404 가 아니라 200 이다** | `location ~ ^/(…)` 에서 빠지면 그 경로는 접두어 `location /` 의 `try_files $uri /index.html` 로 떨어져 **SPA 가 200 으로** 나간다. 차단 전 `GET /admin/api/run` 은 405(FastAPI)였는데 **차단 후 200 이라 더 정상처럼 보인다** | **응답 코드로 판정하지 않는다.** 쿼리스트링에 고유 마커를 심고 `docker compose logs backend` 에 **안 찍히는 것**으로 확인한다(nginx healthcheck 가 `/health` 를 계속 쳐서 줄 수 세기는 노이즈가 낀다) |
 
 ## 테스트 · 검증 · 도구
 

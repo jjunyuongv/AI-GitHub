@@ -118,3 +118,17 @@ IP_RATE_WINDOW_SECONDS = int(os.environ.get("IP_RATE_WINDOW_SECONDS", "3600"))
 # X-Forwarded-For는 클라이언트가 위조할 수 있다. 프록시(Nginx·Cloudflare 등) 뒤에
 # 있을 때만 켤 것. 켜지 않으면 TCP 연결 IP를 쓴다.
 TRUST_PROXY_HEADERS = os.environ.get("TRUST_PROXY_HEADERS", "0") == "1"
+
+# 분석을 허용할 저장소 목록. `owner/name` 을 쉼표로 잇는다. **비어 있으면 제한을 끈다**
+# (위의 상한들이 0으로 꺼지는 것과 같은 관용구다).
+#
+# 로그인이 없는 채로 공개 배포하므로, 켜지 않으면 URL 을 아는 누구나 LLM 비용과
+# 색인 CPU 를 쓴다. 켜는 곳은 배포의 --env-file 하나뿐이고, 로컬 개발은 이 값을
+# 비워 두어 임의 저장소를 그대로 넣는다.
+#
+# **문자열 그대로 둔다. 여기서 파싱하지 않는다.** 두 가지 이유다 —
+# tests/test_status_doc.py 가 이 파일을 **AST 로** 읽어 os.environ.get 의 기본값을
+# 문서와 대조하는데, frozenset(...) 으로 가공하면 대조할 리터럴이 사라진다.
+# 그리고 목록 해석(공백·대소문자·빈 항목)은 비즈니스 규칙이라 services/ 의 몫이다.
+# 파싱과 판정은 app/services/allowlist.py 에 있다.
+ALLOWED_REPOS = os.environ.get("ALLOWED_REPOS", "")

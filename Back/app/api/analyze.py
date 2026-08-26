@@ -9,7 +9,14 @@ from fastapi import APIRouter, HTTPException, Request
 from app.db import chats
 from app.db.pool import DB_ERRORS
 from app.schemas.schemas import AnalyzeRequest, AnalyzeResponse
-from app.services import indexer, rate_limit, run_log, static_analysis, summary_cache
+from app.services import (
+    allowlist,
+    indexer,
+    rate_limit,
+    run_log,
+    static_analysis,
+    summary_cache,
+)
 from app.services.claude_client import (
     DEFAULT_EFFORT,
     DEFAULT_MODEL,
@@ -121,6 +128,17 @@ def analyze(req: AnalyzeRequest, request: Request):
         owner, repo = parse_github_url(req.github_url)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    # 허용 목록은 **check_repo_access 앞에서** 본다. 뒤에 두면 차단할 요청마다
+    # GitHub GET /repos 를 한 번씩 쓰는데, 토큰이 없는 환경은 시간당 60회라
+    # 거절만으로도 서비스가 멎는다. 목록이 비어 있으면 아무 일도 하지 않는다.
+    #
+    # **check_repo_access 안에 넣지 않은 이유**: 그 함수는 관리자 실험실도 쓴다
+    # (api/admin.py). 안에 넣으면 검수용 임의 저장소 분석까지 함께 막힌다.
+    try:
+        allowlist.check(owner, repo)
+    except allowlist.RepoNotAllowed as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
 
     started = time.perf_counter()
     try:

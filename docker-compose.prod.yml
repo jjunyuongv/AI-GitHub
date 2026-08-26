@@ -29,8 +29,14 @@
 # 하나로 합치지 않았다. 합치려면 override 파일이 개발용의 `container_name`·공개 포트를
 # 도로 지우는 모양이 되는데, **두 파일이 각자 읽히는 편이 무엇이 뜨는지 분명하다.**
 #
-#   브라우저 → nginx :80 ┬ /                                  → 정적 파일
-#                        └ /analyze · /chat · /admin · /health → backend:8000 → db:5432
+#   브라우저 → nginx :80 ┬ /                        → 정적 파일
+#                        └ /analyze · /chat · /health → backend:8000 → db:5432
+#
+# **/admin 은 프록시되지 않는다.** 인증이 없는 경로라 네트워크 경계가 인증을 대신한다 —
+# 밖에서 오는 길이 없다. 관리자 페이지는 `docker compose exec backend ...` 나 같은
+# 네트워크의 다른 컨테이너에서 `backend:8000/admin` 으로 연다. **SSH 터널만으로는
+# 안 닿는다** — backend 는 호스트로 포트를 열지 않기 때문이다(아래 주석 참조).
+# (경위는 Front/nginx.conf 와 docs/log/09-deploy.md 5단계)
 
 services:
   db:
