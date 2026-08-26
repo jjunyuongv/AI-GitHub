@@ -686,3 +686,20 @@ wget -q -O - http://backend:8000/admin
 - 목록을 화면에 버튼으로 보여주는 UI(`GET /demo-repos` + 프론트)는 범위 밖으로 두었다.
   지금은 차단 메시지에 목록이 실려 나가고, 프론트는 한 줄도 안 고쳤다
   (`App.tsx` 가 `detail` 을 그대로 띄운다)
+
+### 배포 명령에 `--force-recreate` 를 넣었다 (같은 날)
+
+위 '함정 1' 에서 **"이 파일 머리말이 안내하는 배포 명령에 `--force-recreate` 가 없다"**
+고 적었는데, 그대로 두지 않고 넣었다. 머리말의 배포 명령은 이제
+
+```
+docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build --force-recreate
+```
+
+이고 이유도 한 줄 붙였다. `STATUS.md` §2.1 에도 운영 전제로 올렸다 —
+**깨지면 조용히 틀리는 종류**라서다. 빌드 로그도 healthcheck 도 정상이고 고친 파일을
+봐도 맞으므로, 컨테이너 안을 들여다보기 전에는 알아챌 신호가 없다.
+
+**원인은 여전히 안 팠다**(compose 가 재생성을 어떻게 판단하는가). 그쪽을 이해해야
+막을 수 있는 문제가 아니라 **명령 한 조각으로 막히는 문제**여서다. 대신 확인 절차를
+남겨 둔다 — `docker inspect <컨테이너> --format '{{.Image}}'` 와 방금 구운 이미지 ID 대조.

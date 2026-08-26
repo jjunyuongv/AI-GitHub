@@ -1,7 +1,11 @@
 # RepoDive 프로덕션 구성. 셋이 한 네트워크에 선다.
 #
-#   docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
+#   docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build --force-recreate
 #   docker compose --env-file .env.prod -f docker-compose.prod.yml down
+#
+# **--force-recreate 가 필수다.** `--build` 는 이미지를 새로 굽지만 컨테이너를 반드시
+# 재생성하지는 않는다 — 이미지가 바뀌었는데 옛 컨테이너가 계속 돌면 빌드 로그도
+# healthcheck 도 정상이라 알아챌 신호가 없다. **이번 보안 수정(5단계)에서 실제로 그랬다.**
 #
 # **--env-file 이 필수다.** compose 는 `${VAR}` 치환에 프로젝트 디렉터리의 `.env` 나
 # `--env-file` 로 지정한 파일만 쓴다. 서비스의 `env_file:` 은 치환에 쓰이지 않는다.
