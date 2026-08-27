@@ -853,3 +853,116 @@ for_answer()          : 0건 / 유실: {'경로 해석 실패': 5}
 
 **이것이 조용한 이유는 응답이 인코딩을 말해 주지 않아서다.** 400 만 보고 스키마를 의심하게
 된다(실제로 필드 이름부터 확인했다 — `/chat` 은 `question` 이 아니라 `message` 다).
+
+## 재기동 절차 — 몇 달 뒤에 켤 사람을 위해 (2026-08-27)
+
+**이 서비스는 상시 운영이 아니다. 필요할 때만 켜고 끝나면 끈다.** 켜둔 시간만큼 과금되기
+때문이다(t3.medium 약 **$0.042/시간**). 그래서 "지금 돌고 있다"를 전제로 쓴 위의 절들과
+달리, 이 절은 **아무것도 안 돌고 있는 상태에서 시작한다.**
+
+### 0. 리전은 서울(ap-northeast-2)이다
+
+**콘솔 우상단이 다른 리전이면 인스턴스가 목록에 아예 안 보인다.** 없어진 것처럼 보이지
+오류가 나지 않는다. **처음에 버지니아로 만들었다가 서울로 옮긴 전례가 있어서**, 옛 기억이나
+옛 북마크를 따라가면 빈 목록을 보게 된다.
+
+로컬 `~/.aws/config` 도 `region = ap-northeast-2` 로 맞춰져 있다(콘솔과는 별개다 —
+콘솔 리전은 브라우저가 기억한다).
+
+### 1. 인스턴스 시작 → 퍼블릭 IP 를 다시 본다
+
+EC2 콘솔에서 인스턴스를 시작한다. **중지했다 켜면 퍼블릭 IP 가 바뀐다.**
+Elastic IP 를 안 붙였기 때문이고, 안 붙인 이유는 **붙여 놓고 인스턴스를 끄면 미사용
+Elastic IP 로 따로 과금**되기 때문이다. 즉 IP 가 바뀌는 것은 비용을 아끼는 쪽의 대가다.
+
+**옛 IP 로 SSH 를 시도하면 호스트 키 경고가 아니라 그냥 타임아웃**이 난다 — 그 주소에
+아무것도 없기 때문이다. IP 를 먼저 확인할 것.
+
+### 2. SSH
+
+```
+ssh -i C:\DevData\repodive-seoul.pem ubuntu@<새IP>
+```
+
+키는 **`repodive-seoul.pem`**, 로컬 경로는 **`C:\DevData\repodive-seoul.pem`** 이다.
+`~/Downloads/` 에 있는 다른 `.pem` 둘은 이 프로젝트 것이 아니다.
+
+### 3. SSH 가 안 되면 보안 그룹의 내 IP 를 갱신한다
+
+22번 포트가 **내 IP 하나에만** 열려 있다. **집 IP 가 바뀌면 본인도 막힌다** —
+증상은 거절이 아니라 **타임아웃**이라 2번의 "IP 를 잘못 봤나"와 구별이 안 된다.
+
+EC2 → 보안 그룹 → 인바운드 규칙 → 22번 규칙의 소스를 `내 IP` 로 다시 고른다
+(콘솔이 지금 접속한 IP 를 자동으로 채운다).
+
+**80번은 `0.0.0.0/0` 이라 이것과 무관하다** — 웹은 되는데 SSH 만 안 되면 이 경우다.
+거꾸로 SSH 는 되는데 웹이 안 되면 보안 그룹이 아니라 컨테이너 쪽이다(6번).
+
+### 4. `.env.prod` 의 `PUBLIC_ORIGIN` 을 새 IP 로 바꾼다
+
+`PUBLIC_ORIGIN` 은 `FRONTEND_ORIGIN` 으로 들어가 **CORS 허용 목록**이 된다.
+안 바꾸면 옛 IP 만 허용된 채로 뜬다.
+
+```
+cd ~/AI-GitHub
+sed -i 's|^PUBLIC_ORIGIN=.*|PUBLIC_ORIGIN=http://<새IP>|' .env.prod
+grep '^PUBLIC_ORIGIN=' .env.prod
+```
+
+**`grep` 으로 확인까지 한다.** `sed` 는 패턴이 안 맞아도 조용히 성공하므로, 안 바뀐 것을
+알아챌 신호가 없다.
+
+**`.env.prod` 는 커밋되지 않는다**(`.gitignore` 의 `.env.*`). 인스턴스 위의 그 파일이
+유일본이다 — `ANTHROPIC_API_KEY` · `GITHUB_TOKEN` · `POSTGRES_PASSWORD` · `ALLOWED_REPOS`
+가 거기 있다. **없어졌으면 `.env.prod.example` 을 복사해 다시 채워야 하고, 키는 재발급이다.**
+
+### 5. 스택을 띄운다
+
+```
+docker compose --env-file .env.prod -f docker-compose.prod.yml up -d
+```
+
+**`--build` 는 코드가 바뀌었을 때만 붙인다. 그때는 `--force-recreate` 도 함께다.**
+
+```
+docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build --force-recreate
+```
+
+`--build` 만 쓰면 이미지는 새로 구워지는데 **옛 컨테이너가 계속 돈다** — 빌드 로그도
+healthcheck 도 정상이라 알아챌 신호가 없다(위 '함정 1'). 코드를 안 바꿨으면 `--build`
+자체가 불필요하고, 붙이면 t3.medium 에서 시간만 쓴다.
+
+**`down -v` 를 쓰지 말 것.** `-v` 는 `pgdata` 볼륨을 지우고, 거기에 **대화 이력과 미리
+만들어 둔 색인이 들어 있다.** 지우면 데모 저장소를 처음부터 다시 색인해야 한다.
+인스턴스를 중지·시작하는 것으로는 볼륨이 안 지워진다(EBS 에 남는다).
+
+### 6. 셋 다 healthy 인지 본다
+
+```
+docker compose --env-file .env.prod -f docker-compose.prod.yml ps
+```
+
+`db` · `backend` · `nginx` 가 모두 `Up ... (healthy)` 여야 한다.
+**`backend` 는 `start_period` 가 60초**라 그 전에는 `health: starting` 이 정상이다
+(스키마 적용과 임베딩 예열이 있다). 그다음 브라우저로 `http://<새IP>` 를 연다.
+
+### 7. 끝나면 인스턴스를 중지한다
+
+**이것이 이 절에서 제일 잊기 쉽고 제일 비싼 단계다.** 켜둔 시간만큼 계속 과금된다
+(약 **$0.042/시간** = 하루 약 $1, 한 달 약 $30). 종료(terminate)가 아니라 **중지(stop)**
+다 — 종료하면 EBS 와 함께 볼륨이 사라진다.
+
+### 실측
+
+| | 값 | 어떻게 쟀나 |
+|---|---|---|
+| 인스턴스 | **t3.medium** (2 vCPU · 4 GiB) | 스펙 |
+| 첫 빌드 | **약 10분** (t3.medium, 서울) | `docker compose ps` 가 빌드 직후 "9 minutes ago" 로 찍혔다. **초 단위 계측이 아니고 근거가 이 출력 한 건이다** |
+| backend 이미지 | **2.39GB** | site-packages 308MB · JVM 184MB · 모델 553MB · PMD 78MB · node_modules 52MB (1단계) |
+| nginx 이미지 | **21.1MB** | 2단계 |
+| db 이미지 | **627MB** | `pgvector/pgvector:pg17` |
+| 세 이미지 합 | **약 3.04GB** | 디스크다. RAM 사용량은 재지 않았다 |
+
+**이 절의 색인·응답 시간에 위쪽 절들의 수치를 가져다 쓰지 말 것.** 6단계의 air 색인
+42.7초는 **로컬 Docker Desktop 실측**이고, t3.medium 은 2 vCPU 인 데다 임베딩이 CPU 를
+다 쓴다. **EC2 에서 얼마나 걸리는지는 재지 않았다.**
