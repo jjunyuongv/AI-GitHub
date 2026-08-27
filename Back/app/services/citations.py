@@ -39,11 +39,23 @@ import logging
 import re
 from collections import Counter
 
+from app.core.languages import EXTENSION_TO_LANGUAGE
+
 # "41~100행", "102-124행", "35행". 물결·붙임표·en dash 를 모두 받는다.
 RANGE_RE = re.compile(r"(\d{1,5})\s*[~\-–]\s*(\d{1,5})\s*행")
 SINGLE_RE = re.compile(r"(?<![\d~\-–])(\d{1,5})\s*행")
 # 백틱 안의 내용. 파일명인지 코드인지는 뒤에서 가른다.
 TICK_RE = re.compile(r"`([^`]+)`")
+
+# 백틱 **밖** 평문에서 경로처럼 생긴 토큰. **ASCII 만 받는다** — `\w` 를 쓰면 한글이
+# 딸려 들어와 `PagingUtil.java에서` 가 통째로 한 토큰이 되고 확장자 판정이 깨진다.
+PLAIN_PATH_RE = re.compile(r"[A-Za-z0-9_./\\-]+")
+
+# 파일 경로에는 안 들어가는 글자. 하나라도 있으면 경로가 아니다.
+# 실측 유실에서 잡아낸 것들이다 — `// trust all servers`(공백) ·
+# `@router.delete("/api/...")`(따옴표·괄호) · `success / total * 100`(공백) ·
+# `https://{bucket}.s3...`(중괄호) · `"image/png"`(따옴표).
+NOT_IN_A_PATH = set(' \t"\'()[]{}<>*|;,=`')
 
 # 채점이 쓸 조각의 하한. 이보다 짧으면 어디에나 있어 변별력이 없다(`size` 같은 것).
 # **거르는 것은 `snippets` 목록이지 인용이 아니다** — 조각이 하나도 안 남아도 인용은 만든다.
@@ -56,7 +68,25 @@ logger = logging.getLogger(__name__)
 
 
 def looks_like_path(text: str) -> bool:
-    return "/" in text or bool(re.search(r"\.\w{1,4}$", text))
+    """파일 경로처럼 보이는가 — **수집되는 소스 확장자로 끝나야 한다.**
+
+    전에는 `"/" 포함` 또는 `.확장자 끝` 이면 통과였다. 그 규칙이 실측 유실 171건을
+    **전부** 만들었다 — 라우트(`/login`) · 주석(`// trust all servers`) ·
+    산술식(`success / total * 100`) · 점 표기(`np.isin`) · 디렉터리 · URL 이 모두
+    파일명 자리에 들어앉았고, 그중 **실제 파일은 0건**이었다.
+
+    **조여도 잃는 것이 없다는 근거가 있다.** 보관되는 파일은 `language_for()` 가 아는
+    확장자뿐이고(`github_client.fetch_source_files`), 경로 해석은 보관 목록에 대한
+    접미사 매칭이다. 그러므로 **이 표에 없는 확장자로 끝나는 문자열은 애초에 어떤
+    보관 경로와도 맞을 수 없다.** 거르는 것은 링크가 될 수 없었던 것뿐이다.
+
+    이 판정은 `snippets`(채점 재료)의 반대편이기도 하다. 조인 만큼 `np.isin` 같은
+    것이 코드 조각 쪽으로 넘어가는데, **그쪽이 실제로 코드라서 맞는 방향이다.**
+    """
+    name = text.strip()
+    if not name or NOT_IN_A_PATH & set(name):
+        return False
+    return name.lower().endswith(tuple(EXTENSION_TO_LANGUAGE))
 
 
 def _drop(dropped: Counter | None, reason: str, n: int = 1) -> None:
@@ -86,7 +116,54 @@ def resolve_path(name: str, paths: list[str]) -> str | None:
     return matches[0] if len(matches) == 1 else None
 
 
-def extract(answer: str, dropped: Counter | None = None) -> list[dict]:
+def _file_for_line(line: str, ticks: list[str], stored: list[str] | None) -> str | None:
+    """이 줄이 말하는 파일. 못 고르면 None (그러면 직전 줄의 것이 이어진다).
+
+    **보관 목록을 알면 그것으로 고른다.** `stored` 가 없으면 옛 규칙 그대로
+    "백틱 안 경로 후보 중 마지막" 이다.
+
+    순서에 이유가 있다:
+
+    1. **백틱 안에서 실제 보관 경로로 풀리는 것** — 답변이 명시적으로 표시한 파일이다.
+       전에는 그냥 마지막 후보를 집었는데, 그래서 아래 모양에서 라우트가 이겼다:
+
+           - **`CalendarController.java`의 `saveSchedule()`** (61-74행): `POST /api/schedules` …
+
+       올바른 파일명이 **앞에** 있고 뒤에 온 것이 파일이 아니었다. 실측 33건.
+    2. **백틱 밖 평문에서 풀리는 것** — 모델이 파일명을 백틱에 안 넣는 모양이 흔하다:
+
+           `PagingUtil.pagingImg()`(src/main/java/…/PagingUtil.java, 7-71행) 에서 …
+
+       실측 60건. **여기서만 풀리는 것을 받는 이유는 오탐 때문이다** — 평문은 후보가
+       훨씬 많으므로, 보관 경로로 풀리지 않으면 아예 안 쓴다.
+    3. **풀리지 않는 백틱 후보** — 답변이 우리가 안 가진 파일을 지목한 경우다.
+       그래도 `current_file` 로 삼는다. **안 삼으면 직전 줄의 파일이 이어져 엉뚱한
+       파일에 링크가 걸린다** — 유실로 세는 편이 낫다("경로 해석 실패").
+    """
+    in_ticks = [t for t in ticks if looks_like_path(t)]
+    if stored is None:
+        return in_ticks[-1] if in_ticks else None
+
+    resolving = [t for t in in_ticks if len(_matching_paths(t, stored)) == 1]
+    if resolving:
+        return resolving[-1]
+
+    plain = [
+        t
+        for t in PLAIN_PATH_RE.findall(TICK_RE.sub(" ", line))
+        if looks_like_path(t.rstrip(".")) and len(_matching_paths(t.rstrip("."), stored)) == 1
+    ]
+    if plain:
+        return plain[-1].rstrip(".")
+
+    return in_ticks[-1] if in_ticks else None
+
+
+def extract(
+    answer: str,
+    dropped: Counter | None = None,
+    stored_paths: list[str] | None = None,
+) -> list[dict]:
     """답변에서 `(파일, 행범위, 코드조각들, 답변 안 위치)` 를 뽑는다.
 
     `marker` 는 답변에 **실제로 쓰인 글자**("26-91행")이고 `offset` 은 답변 문자열 안의
@@ -101,6 +178,11 @@ def extract(answer: str, dropped: Counter | None = None) -> list[dict]:
     누적하고 자르는 규칙은 그대로 둔다.
 
     `dropped` 를 주면 **행 표기를 잡고도 버린 건수**를 사유별로 담아 준다.
+
+    `stored_paths` 를 주면 파일명을 고를 때 **그 목록으로 풀리는 쪽을 먼저** 본다
+    (`_file_for_line` 참고). 안 주면 옛 규칙대로 백틱 안 마지막 후보를 쓴다 —
+    **판정은 여전히 안 한다.** 목록은 "무엇을 파일명으로 볼까"를 고르는 데만 쓰이고,
+    행 범위가 맞는지는 여기서도 보지 않는다.
     """
     out: list[dict] = []
     current_file = None
@@ -111,9 +193,9 @@ def extract(answer: str, dropped: Counter | None = None) -> list[dict]:
         line = stripped[0] if stripped else ""
 
         ticks = TICK_RE.findall(line)
-        paths = [t for t in ticks if looks_like_path(t)]
-        if paths:
-            current_file = paths[-1]
+        chosen = _file_for_line(line, ticks, stored_paths)
+        if chosen:
+            current_file = chosen
 
         spans = [
             (int(m.group(1)), int(m.group(2)), m)
@@ -171,9 +253,12 @@ def for_answer(
     무엇보다 그건 버릴 이유가 아니다 — 화면이 "이 파일은 N행뿐입니다"를 보여 준다.
 
     `dropped` 를 주면 `extract()` 의 유실과 여기서의 유실을 한 Counter 에 함께 담는다.
+
+    **보관 목록을 `extract()` 에도 넘긴다.** 파일명을 고르는 단계에서 이미 그것을 알면
+    라우트·주석 같은 것이 실제 파일명을 덮는 일이 없다(`_file_for_line`).
     """
     resolved = []
-    for cite in extract(answer, dropped):
+    for cite in extract(answer, dropped, paths):
         matches = _matching_paths(cite["file"], paths)
         if len(matches) != 1:
             _drop(dropped, "접미사 중복" if matches else "경로 해석 실패")

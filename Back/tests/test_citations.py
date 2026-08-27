@@ -11,6 +11,7 @@ from app.services.citations import (
     MIN_SNIPPET_CHARS,
     extract,
     for_answer,
+    looks_like_path,
     resolve_path,
 )
 
@@ -314,3 +315,134 @@ def test_an_out_of_file_range_is_not_a_drop():
 
     assert [c["start_line"] for c in cites] == [99999]
     assert dropped == Counter()
+
+
+# --- 파일명을 고르는 규칙 세 가지 ---------------------------------------------
+#
+# **셋을 따로 조인다.** 실측에서 기여도가 크게 갈렸기 때문이다 — 조이기 +136건,
+# 풀리는 것 우선 **+1건**, 평문 +135건. 한 대역으로 뭉쳐 두면 +1 짜리 규칙을
+# 통째로 지우는 변이가 조용히 통과한다.
+
+
+def test_a_route_no_longer_hijacks_the_filename():
+    """규칙 1 — `looks_like_path` 조이기.
+
+    실측 유실 171건이 **전부** 이것이었다. 라우트·주석·산술식·점 표기가 파일명
+    자리에 들어앉고, `current_file` 이 이어지는 성질 때문에 **다음 줄까지 오염된다.**
+
+    **규칙 2 가 구제할 수 없는 모양이라야 이 규칙만 갈린다.** 그래서 라우트를 그 줄의
+    **유일한** 후보로 둔다 — 풀리는 후보가 하나도 없으니 "풀리는 것 우선"은 할 일이 없다.
+    옛 규칙(`"/" 포함`)이면 `/login` 이 `current_file` 이 되어 앞 줄의 파일을 덮고
+    인용이 0건이다. 조인 규칙이면 후보 자체가 없어 앞 파일이 그대로 이어진다.
+
+    실측 데모에서 정확히 이 모양으로 세 줄이 연달아 오염됐다(`/myChatServer`).
+    """
+    answer = (
+        "## `SecurityConfig.java`\n"
+        "\n"
+        "- 35-42행에서 `/login` 으로 리다이렉트합니다.\n"
+    )
+
+    cites = for_answer(answer, PATHS)
+
+    assert [c["path"] for c in cites] == [PATHS[0]]
+    assert [c["start_line"] for c in cites] == [35]
+
+
+def test_only_collected_extensions_count_as_a_path():
+    """규칙 1의 경계 — 확장자 표가 판정 기준이다.
+
+    `.java` 는 수집되고 `.gif` 는 안 된다. **양쪽을 다 둔다** — 한쪽만 있으면
+    "확장자 표를 본다"를 "점이 있으면 통과"로 되돌리는 변이가 안 잡힌다.
+    `np.isin` 은 실측에서 8건 잡아먹은 점 표기다.
+    """
+    assert looks_like_path("UserService.java")
+    assert looks_like_path("src/main/java/com/pj/springboot/UserService.java")
+
+    assert not looks_like_path("paging4.gif")          # 수집 대상이 아니다
+    assert not looks_like_path("np.isin")              # 점 표기
+    assert not looks_like_path("/login")               # 라우트
+    assert not looks_like_path("src/main/java/jpa/")   # 디렉터리
+    assert not looks_like_path("// trust all servers")  # 주석
+    assert not looks_like_path("success / total * 100")  # 산술식
+
+
+def test_a_resolvable_name_wins_over_a_later_unresolvable_one():
+    """규칙 2 — 풀리는 것 우선.
+
+    **둘 다 `.java` 라 규칙 1로는 안 갈린다.** 앞의 것만 보관돼 있고 뒤의 것은 없다.
+    옛 규칙(`마지막 후보`)이면 뒤엣것이 이겨 "경로 해석 실패"가 되고, 새 규칙이면
+    앞엣것으로 링크된다. 실측 기여는 +1건이지만 **규칙이 하는 일은 이것 하나다.**
+    """
+    answer = (
+        "- **`UserService.java`의 `save()`** (26-49행): "
+        "`LegacyUserService.java` 를 대신합니다.\n"
+    )
+    dropped = Counter()
+
+    cites = for_answer(answer, PATHS, dropped)
+
+    assert [c["path"] for c in cites] == [PATHS[2]]
+    assert dropped == Counter()
+
+
+def test_a_filename_outside_backticks_is_read():
+    """규칙 3 — 백틱 밖 평문도 본다. 실측 +135건.
+
+    모델이 파일명을 괄호 안 평문으로 적는 모양이 흔하다. **한글이 바로 붙어도**
+    잘라내야 한다 — 토큰 정규식이 `\\w` 면 `UserService.java에서` 가 통째로 잡혀
+    확장자 판정이 깨진다.
+    """
+    answer = "`save()` 는 (src/main/java/com/pj/springboot/jpa/UserService.java, 26-49행)에 있습니다.\n"
+
+    cites = for_answer(answer, PATHS)
+
+    assert [c["path"] for c in cites] == [PATHS[2]]
+
+    korean_hugging = "`save()` 는 UserService.java에서 26-49행입니다.\n"
+
+    assert [c["path"] for c in for_answer(korean_hugging, PATHS)] == [PATHS[2]]
+
+
+def test_plain_text_is_only_trusted_when_it_resolves():
+    """규칙 3의 반대쪽 — **평문은 풀릴 때만 받는다.**
+
+    평문은 후보가 훨씬 많아 오탐이 여기서 난다. 풀리지 않는 평문 파일명은 무시하고
+    **직전 줄의 파일이 그대로 이어져야 한다.** 이 대역이 없으면 "평문을 무조건
+    후보로 받는다"는 변이가 통과하고, 그러면 인용이 엉뚱한 곳으로 붙거나 사라진다.
+    """
+    answer = (
+        "## `UserService.java`\n"
+        "\n"
+        "- 26-49행은 LegacyUserService.java 와 같은 일을 합니다.\n"
+    )
+
+    cites = for_answer(answer, PATHS)
+
+    assert [c["path"] for c in cites] == [PATHS[2]]
+
+
+def test_an_unresolvable_backtick_name_still_becomes_the_current_file():
+    """지목한 파일을 우리가 안 가졌으면 **유실로 세지, 직전 파일로 잇지 않는다.**
+
+    이으면 엉뚱한 파일에 링크가 걸린다 — 링크가 없는 편이 낫다는 원칙의 연장이다.
+    """
+    answer = (
+        "## `UserService.java`\n"
+        "\n"
+        "- `NotCollected.java`(1-5행)에서 `doThing(x) {}` 를 부릅니다.\n"
+    )
+    dropped = Counter()
+
+    assert for_answer(answer, PATHS, dropped) == []
+    assert dropped == Counter({"경로 해석 실패": 1})
+
+
+def test_without_stored_paths_the_old_rule_still_applies():
+    """`extract()` 는 보관 목록 **없이도** 돌아야 한다 — 채점 하네스의 단위 테스트가 그렇게 쓴다.
+
+    목록이 없으면 풀리는지 알 수 없으므로 백틱 안 마지막 후보를 쓴다(옛 규칙).
+    """
+    answer = "- `SecurityConfig.java` 와 `UserService.java`(26-49행)를 봅니다.\n"
+
+    assert [c["file"] for c in extract(answer)] == ["UserService.java"]

@@ -148,7 +148,10 @@ def test_measure_line_number_accuracy(capsys):
             for path_name in rec.get("arms", ("rag", "full")):
                 counts = Counter()
                 for row in rec[path_name]["rows"]:
-                    for cite in _citations(row.get("answer", "")):
+                    # **보관 목록을 넘긴다 — `/chat` 이 넘기는 것과 같아야 한다.**
+                    # 안 넘기면 파일명을 고르는 규칙이 갈려 "채점하는 인용"과 "화면에
+                    # 링크로 뜨는 인용"이 다른 집합이 된다(모듈 docstring 의 전제).
+                    for cite in _citations(row.get("answer", ""), None, list(files)):
                         verdict, detail = _verdict(cite, files)
                         counts[verdict] += 1
                         total[verdict] += 1
