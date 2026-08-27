@@ -229,6 +229,7 @@ RepoDive 를 만들며 **실제로 겪은** 문제와 해결을 한곳에 모은
 | **`pytest` 통과 수가 478 → 357 로 줄었다. 실패는 0건이고 skip 이 14 → 135 로 늘었다** | Docker 미기동. DB 가 필요한 121건이 `PostgreSQL 에 붙을 수 없어 건너뜁니다` 로 빠졌다. **통과 수만 보면 회귀처럼 읽히지만 회귀가 아니다** — 회귀면 failed 가 뜬다 | **skip 개수를 먼저 본다.** 실패 0건 + skip 급증이면 환경이다. `cd Back; docker compose up -d` 후 healthy 를 확인하고 재실행하면 478 로 돌아온다. 사유는 `-rs`. 다른 Docker 두 행(503 · 대화 사라짐)은 **사용자가 겪는 증상**이고 이건 **개발자가 겪는 증상**이다 |
 | **문서를 한 줄 고쳤는데 diff 가 파일 전체로 뜬다** | 개행 정규화. `autocrlf=true` 인데 워킹트리 개행이 **파일마다 다르다** — `plan.md`·`CLAUDE.md` 는 CRLF, `TROUBLESHOOTING.md`·`트러블슈팅.md`·`플로우.md` 는 LF | 고치기 전에 **그 파일의** 개행을 확인한다. 도구를 Python 으로 바꿔도 안 풀린다 — `.gitattributes` 로 현상 고정. 상세는 [06-stage5.md](docs/log/06-stage5.md) 의 분할 절 |
 | **한 줄만 지웠는데 파일 전체가 CRLF → LF 로 바뀐다** | Git Bash 의 `sed -i` 가 텍스트 모드로 읽고 써서 CR 을 전부 흘린다. `grep $'\r'` 도 `file` 도 CR 을 못 보여 줘서 "안 바뀐 것처럼" 보인다 | **CRLF 문서에 `sed -i` 를 쓰지 않는다**(PowerShell 의 `File.AppendAllText`/`ReadAllText` 로 쓴다). 확인은 `cat -A` 의 `^M$` 와 `git diff --numstat`(전체 행이 바뀌면 정규화다). 이미 저질렀으면 `git checkout -- <파일>` |
+| **한글이 든 JSON 을 `curl -d` 로 보내니 400 `error parsing the body`** | Git Bash 를 거치며 한글이 깨져 JSON 이 유효하지 않게 된다. **응답은 인코딩을 말해 주지 않아** 스키마부터 의심하게 된다 | 파일에 `ensure_ascii=False` + UTF-8 로 써서 `--data-binary @파일` 로 보낸다. 필드 이름도 스키마에서 확인할 것(`/chat` 은 `question` 이 아니라 `message`) |
 
 ---
 
