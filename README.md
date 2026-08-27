@@ -5,8 +5,23 @@ GitHub 저장소 주소를 넣으면 코드를 읽어 구조와 기술스택을 
 큰 저장소는 모델이 `search_code`·`read_file`·`grep` 을 직접 부르고, 작은 저장소는 소스 전체를
 프롬프트에 넣는다 — **둘 중 어느 쪽이 나은지는 재서 정했다. 그 절차가 이 프로젝트의 내용이다.**
 
-<!-- TODO: docs/img/chat-citation.png — 인용 링크가 걸린 답변 화면 -->
-<!-- TODO: docs/img/analyze.png — 요약 화면 -->
+![인용이 걸린 답변](docs/img/01-answer-citations.png)
+
+*`jjunyuongv/air` 에 "실시간 채팅 기능들의 각각 파일들을 보여줘" 라고 물은 결과.
+답변이 `ChatSocketConfig.java`·`ChatHandler.java`·`ChatController.java` 를 짚고,
+행 표기(`1~29행`·`24행`·`42~54행` …)마다 링크가 걸려 있다.*
+
+![인용을 펼친 화면](docs/img/02-code-expanded.png)
+
+*'근거' 목록에서 `ChatHandler.java 24행` 을 펼친 것. 그 행을 하이라이트하고 앞뒤로
+20행씩(`CITATION_CONTEXT_LINES`) 붙여 4-44행을 보여준다 — **서버는 인용이 맞았는지
+판정하지 않는다.** 코드를 그대로 펼쳐 두고 맞았는지는 사람이 본다.*
+
+![허용 목록 차단](docs/img/03-landing-blocked.png)
+
+*공개 데모는 `ALLOWED_REPOS` 로 저장소를 제한한다. `pallets/flask` 를 넣으면 분석하지
+않고 쓸 수 있는 저장소(`teaey/apns4j`·`jjunyuongv/air`)를 알려준다 — 로그인이 없고
+남용 상한이 서비스 전체 합산이라 한 명이 나머지를 막을 수 있다.*
 
 ## 실측
 
