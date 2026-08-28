@@ -932,6 +932,56 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build --f
 healthcheck 도 정상이라 알아챌 신호가 없다(위 '함정 1'). 코드를 안 바꿨으면 `--build`
 자체가 불필요하고, 붙이면 t3.medium 에서 시간만 쓴다.
 
+#### 지금은 코드가 바뀌어 있다 — **둘 다 붙여야 한다** (2026-08-28 기준)
+
+| | |
+|---|---|
+| 운영 스택이 마지막으로 배포된 커밋 | **`50d8ae3`** (2026-08-27 15:23, 위 6단계) |
+| 그때 구운 이미지 | backend `b74e4919…` · nginx `171c62d4…` |
+| 그 뒤 **이미지에 들어가는 경로**에서 바뀐 것 | `Back/app/services/citations.py` **한 파일**(+103 −8) |
+
+그 뒤 커밋은 8개지만 **나머지 6개는 전부 문서다.** 미배포인 것은 **인용 수정 셋**이다:
+
+| 수정 | 한 일 | 커밋 |
+|---|---|---|
+| B | 백틱 후보 중 **실제 보관 경로로 풀리는 것** 우선 | `66281a0` |
+| C | 백틱 **밖 평문**도 본다 — 풀릴 때만 | `66281a0` |
+| 경계 | 접미사를 **경로 경계에서** 끊는다 | `5415c1d` |
+
+셋의 누적 효과는 **인용 535 → 814 · 유실 358 → 79 · 경로 해석 실패 171 → 0** 이다
+(`docs/log/10-citation-paths.md`).
+
+**안 굽고 켜면 데모에서 이 셋이 하나도 안 보인다.** 위 6단계에서 실제로 본 그 화면 —
+`extract()` 가 5건을 다 잡았는데 `for_answer()` 에서 5건이 다 탈락해 **링크가 하나도
+안 걸린 답변** — 이 그대로 재현된다. **그리고 그것은 오류로 보이지 않는다.** 답변은
+멀쩡히 나오고 행 번호도 적혀 있으며, 다만 클릭이 안 될 뿐이다.
+
+굽고 나면 **이미지 ID 를 대조한다**(5단계 함정 1 의 절차):
+
+```
+docker inspect <컨테이너> --format '{{.Image}}'
+```
+
+**배포하면 이 절의 표를 갱신할 것.** 손으로 관리하는 값이라 안 고치면 다음 사람이
+"미배포"를 그대로 믿는다. 다음 배포 커밋을 넣고 델타를 다시 뽑는 명령은 이것이다:
+
+```
+git log --oneline <배포커밋>..HEAD -- \
+  Back/app Back/requirements.txt Back/package.json Back/package-lock.json \
+  Back/scripts/install_pmd.py Back/Dockerfile \
+  Front docker-compose.prod.yml
+```
+
+**경로 목록이 이 판정의 전부다** — 여기 없는 것(문서·`Back/tests/`·`.env.prod`)은
+이미지에 안 들어가므로 `--build` 를 부르지 않는다. 반대로 **이 목록에서 빠뜨린 경로가
+있으면 "안 바뀌었다"고 잘못 읽는다.**
+
+**목록의 정본은 두 Dockerfile 의 `COPY` 대상이다.** 짐작으로 적지 말고 거기서 뽑을 것 —
+처음에 `Front/src`·`Front/Dockerfile`·`Front/nginx.conf` 만 적었다가 고쳤다.
+`Front/Dockerfile` 은 빌드 컨텍스트를 통째로 넣고(`COPY . .`, `.dockerignore` 가 거른다)
+`Back/Dockerfile` 은 `app/` 말고도 `package.json`(stylelint)과 `scripts/install_pmd.py`
+를 가져간다. **`COPY` 가 바뀌면 이 목록도 같이 고친다.**
+
 **`down -v` 를 쓰지 말 것.** `-v` 는 `pgdata` 볼륨을 지우고, 거기에 **대화 이력과 미리
 만들어 둔 색인이 들어 있다.** 지우면 데모 저장소를 처음부터 다시 색인해야 한다.
 인스턴스를 중지·시작하는 것으로는 볼륨이 안 지워진다(EBS 에 남는다).
