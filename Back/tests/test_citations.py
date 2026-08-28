@@ -210,6 +210,32 @@ def test_an_ambiguous_suffix_resolves_to_nothing():
     assert resolve_path("User.java", dupes) is None
 
 
+def test_a_partial_suffix_is_not_a_match():
+    """**파일 이름 중간에서 잘린 접미사는 맞은 것이 아니다.**
+
+    `p.endswith(name)` 이던 시절 `ApnsPayload.java` 가 `Payload.java` 에 맞아,
+    답변이 파일을 **정확히 적어도** 둘이 맞아 "접미사 중복"으로 버려졌다.
+    접두어가 붙은 동명 클래스가 흔한 Java 저장소에서 실측했다.
+
+    **한 쌍의 양쪽을 다 고정한다.** 한쪽만 두면 경계를 되돌려도 그쪽은 그대로 풀려서
+    변이가 통과한다 — 짧은 이름 쪽이 갈리는 자리다.
+    """
+    prefixed = ["a/ApnsPayload.java", "a/Payload.java"]
+
+    assert resolve_path("Payload.java", prefixed) == "a/Payload.java"
+    assert resolve_path("ApnsPayload.java", prefixed) == "a/ApnsPayload.java"
+
+
+def test_a_shortened_path_still_resolves_across_the_boundary():
+    """경계로 조인 것이 **줄여 쓴 경로**를 막지 않는다는 반대쪽.
+
+    답변은 경로를 줄여 쓰는데(`jpa/UserService.java`) 그 줄임은 언제나 경계에서
+    시작한다. 이게 없으면 매칭을 완전 일치로 바꾸는 변이가 통과한다.
+    """
+    assert resolve_path("jpa/UserService.java", PATHS) == PATHS[2]
+    assert resolve_path("com/pj/springboot/SecurityConfig.java", PATHS) == PATHS[0]
+
+
 def test_a_leading_dot_slash_is_stripped():
     assert resolve_path("./SecurityConfig.java", PATHS) == PATHS[0]
 
@@ -292,6 +318,23 @@ def test_an_ambiguous_suffix_is_counted_apart_from_an_unknown_one():
 
     assert for_answer(answer, dupes, dropped) == []
     assert dropped == Counter({"접미사 중복": 1})
+
+
+def test_a_prefixed_namesake_no_longer_swallows_the_citation():
+    """**끝에서 끝까지 — 버려지던 인용이 화면에 링크로 나간다.**
+
+    위 `resolve_path` 대역과 같은 결함이지만 재는 자리가 다르다. 그쪽은 해석 함수를,
+    여기는 **화면에 나가는 목록과 유실 카운터**를 본다 — `for_answer` 가 중복을
+    세는 자리가 따로 있어서, 해석만 고쳐 놓고 카운터가 어긋나는 상태를 못 잡는다.
+    """
+    prefixed = ["a/ApnsPayload.java", "a/Payload.java"]
+    answer = "- `Payload.java`(65-67행)의 `toJsonString()` 이 진입점입니다."
+    dropped = Counter()
+
+    cites = for_answer(answer, prefixed, dropped)
+
+    assert [c["path"] for c in cites] == ["a/Payload.java"]
+    assert dropped == Counter()
 
 
 def test_nothing_is_counted_when_every_citation_resolves():

@@ -96,11 +96,21 @@ def _drop(dropped: Counter | None, reason: str, n: int = 1) -> None:
 
 
 def _matching_paths(name: str, paths: list[str]) -> list[str]:
-    """접미사로 맞는 보관 경로 전부. 몇 개가 맞았는지로 유실 사유가 갈린다."""
+    """접미사로 맞는 보관 경로 전부. 몇 개가 맞았는지로 유실 사유가 갈린다.
+
+    **경계에서 끊는다 — 맨 문자열 접미사로 맞추면 안 된다.** 전에는 `p.endswith(name)`
+    이라 `.../ApnsPayload.java` 가 `Payload.java` 에 맞았다. 그래서 답변이 파일을
+    **정확히 적어도** 둘이 맞아 "접미사 중복"으로 버려졌다. 접두어가 붙은 동명 클래스가
+    흔한 Java 저장소에서 실측했다(`I`+인터페이스명 관례도 같은 모양으로 걸린다).
+
+    **답변이 경로를 줄여 쓰는 것은 그대로 받는다** — 줄인 경로는 언제나 경계에서
+    시작하므로(`jpa/UserService.java`) 이 규칙에 걸리지 않는다. 걸러지는 것은
+    파일 이름의 **중간에서 잘린** 문자열뿐이고, 그건 애초에 다른 파일이다.
+    """
     name = name.strip().lstrip("./")
     if not name:
         return []
-    return [p for p in paths if p.endswith(name)]
+    return [p for p in paths if p == name or p.endswith("/" + name)]
 
 
 def resolve_path(name: str, paths: list[str]) -> str | None:
