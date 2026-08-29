@@ -1,4 +1,9 @@
-"""청킹 규칙 버전 — 지금 코드가 만드는 청크의 모양을 식별하는 해시.
+"""청킹 규칙 버전 — 지금 코드가 만드는 색인의 모양을 식별하는 해시.
+
+**무엇까지 세는가.** 이름은 '청킹'이지만 실제로 재는 것은 **청크 경계와 그 청크를
+벡터로 만드는 방식** 둘 다이다. 저장된 청크가 지금 검색에 쓸 만한지를 가르려면
+둘 다 봐야 한다 — 경계가 같아도 벡터가 다르면 그 색인은 지금 질의와 다른 자로 잰
+것이고, 그것이 fp32 를 int8 로 바꿀 때 실제로 재색인 대상을 잡아 준 신호였다.
 
 **왜 필요한가.** 청킹 규칙을 고쳐도 이미 저장된 청크는 옛 규칙 그대로다. 다시
 인덱싱되는 것은 새 스냅샷이 생길 때뿐이라(저장소가 갱신돼 pushed_at 이 바뀔 때),
@@ -18,6 +23,7 @@ import textwrap
 
 from app.config import EMBEDDING_MODEL, EMBEDDING_PASSAGE_PREFIX
 from app.core import chunker
+from app.core.embeddings import EMBED_BATCH_SIZE
 
 # 이 표식이 붙은 인덱스는 규칙 기록이 생기기 전에 만들어진 것이다.
 # 무슨 규칙이었는지 알 방법이 없으므로 "모른다"로 남기고 재색인 대상으로 본다.
@@ -35,7 +41,7 @@ _RULE_FUNCTIONS = (
 
 
 def _constants() -> list:
-    """값이 바뀌면 청크 경계가 바뀌는 것들.
+    """값이 바뀌면 청크 경계나 벡터가 바뀌는 것들.
 
     노드 목록(DEFINITION_NODES 등)도 넣는다 — 언어를 추가하거나 어떤 노드를
     정의로 볼지 바꾸면 그 언어의 청크가 통째로 달라진다. 집합은 순서가 없으므로
@@ -45,6 +51,12 @@ def _constants() -> list:
     한도를 직접 읽지 않고 모델 이름을 넣는 이유는 input_limit() 이 모델을 올려야
     답하기 때문이다 — 규칙 하나 확인하려고 2GB 를 로드할 수는 없다.
     문서 접두어도 토큰 수에 들어가므로 함께 넣는다.
+
+    배치 크기는 청크 경계를 안 바꾼다. 그런데도 넣는 이유는 **같은 청크가 배치에 따라
+    다른 벡터로 나오기 때문**이다(코사인 평균 0.993 — int8 과 fp32 의 차이만큼 벌어진다).
+    이 값을 빼 두면 배치를 바꿔도 해시가 그대로라 낡음 경고가 안 뜨고, 옛 배치로 만든
+    색인과 새 배치로 만든 색인이 겉으로 구분되지 않는다 — 배치를 다시 재려고 할 때
+    **어느 쪽으로 만든 색인인지 모른 채 측정하게 된다.**
     """
     return [
         chunker.MAX_CHUNK_CHARS,
@@ -57,6 +69,7 @@ def _constants() -> list:
         sorted((lang, sorted(nodes)) for lang, nodes in chunker.DEFINITION_NODES.items()),
         EMBEDDING_MODEL,
         EMBEDDING_PASSAGE_PREFIX,
+        EMBED_BATCH_SIZE,
     ]
 
 

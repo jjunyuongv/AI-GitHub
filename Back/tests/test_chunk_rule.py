@@ -46,6 +46,18 @@ def test_embedding_model_changes_the_rule(monkeypatch):
     assert chunk_rule.rule_version() != before
 
 
+def test_embed_batch_size_changes_the_rule(monkeypatch):
+    """배치가 바뀌면 청크 경계는 그대로인데 벡터가 달라진다 — 그것도 재색인 대상이다.
+
+    이 값이 해시에 없으면 배치를 바꿔도 낡음 경고가 안 뜨고, 옛 배치로 만든 색인과
+    새 배치로 만든 색인을 겉으로 구분할 수 없다.
+    """
+    before = chunk_rule.rule_version()
+    monkeypatch.setattr(chunk_rule, "EMBED_BATCH_SIZE", chunk_rule.EMBED_BATCH_SIZE * 2)
+
+    assert chunk_rule.rule_version() != before
+
+
 def _variant(kind: str):
     """같은 이름·같은 로직인데 주석과 docstring 만 다른 함수를 만든다.
 
