@@ -65,6 +65,18 @@ function IndexNotice({ status }: { status: IndexStatus }) {
     );
   }
 
+  // 실패가 아니라 만들지 않기로 정한 것이다. 왜 코드 검색이 안 되는지가 문장에
+  // 있어야 하고, **몇 개라서 넘었는지도 보여준다** — "너무 큽니다"만으로는 얼마나
+  // 큰지, 다른 저장소는 되는지 알 수 없다.
+  if (status.status === "skipped") {
+    return (
+      <p className="chat-index skipped" role="status">
+        이 저장소는 코드 검색을 만들지 않았습니다
+        {status.error ? ` — ${status.error}` : ""}. 요약과 파일 목록을 근거로 답합니다.
+      </p>
+    );
+  }
+
   const { chunks_done: done, chunks_total: total } = status;
   const progress = total ? `${done.toLocaleString()} / ${total.toLocaleString()}개` : "준비 중";
 

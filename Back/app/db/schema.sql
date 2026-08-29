@@ -318,7 +318,7 @@ CREATE TABLE IF NOT EXISTS index_builds (
   snapshot_id  BIGINT NOT NULL REFERENCES repo_snapshots(id) ON DELETE CASCADE,
   table_name   TEXT NOT NULL,
   chunk_rule   TEXT NOT NULL,
-  status       TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed')),
+  status       TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed', 'skipped')),
   chunks_total INT NOT NULL DEFAULT 0,
   chunks_done  INT NOT NULL DEFAULT 0,
   error        TEXT,
@@ -329,6 +329,17 @@ CREATE TABLE IF NOT EXISTS index_builds (
 
 CREATE INDEX IF NOT EXISTS index_builds_snapshot_idx
   ON index_builds (snapshot_id, table_name, id DESC);
+
+-- 'skipped' 를 받아들이게 제약을 다시 건다 — 이미 만들어진 DB 는 위 CREATE TABLE 이
+-- 건너뛰어지므로 여기서 고쳐야 한다. DROP IF EXISTS 를 앞에 두어 여러 번 돌려도 같다.
+--
+-- **snapshot_index_status 쪽 제약은 안 고친다.** 그 표의 status 는 complete() 가
+-- 'completed' 로만 쓰고 코드가 더 이상 읽지 않는다(이 파일 아래 설명). 상한을 넘긴
+-- 빌드는 활성 포인터를 만들지 않으므로 그 표에 닿지 않는다.
+ALTER TABLE index_builds DROP CONSTRAINT IF EXISTS index_builds_status_check;
+ALTER TABLE index_builds
+  ADD CONSTRAINT index_builds_status_check
+  CHECK (status IN ('pending', 'running', 'completed', 'failed', 'skipped'));
 
 -- 검색이 보는 빌드. 이 포인터가 곧 "완료된 색인"의 정의다.
 ALTER TABLE snapshot_index_status

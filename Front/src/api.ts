@@ -66,7 +66,9 @@ export async function fetchFileView(
 
 /** 코드 색인 진행 상황. completed 가 되기 전에는 답변에 코드가 쓰이지 않는다. */
 export type IndexStatus = {
-  status: "pending" | "running" | "completed" | "failed";
+  /** skipped 는 실패가 아니라 **만들지 않기로 정한 것**이다 (청크 수가 상한 초과).
+   *  그때 chunks_total 은 실제로 나온 청크 수이고 error 에 사유가 들어간다. */
+  status: "pending" | "running" | "completed" | "failed" | "skipped";
   chunks_total: number;
   chunks_done: number;
   /** 남은 예상 시간(초). 진행이 없어 계산할 수 없으면 null. */

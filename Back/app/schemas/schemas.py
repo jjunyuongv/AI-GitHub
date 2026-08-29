@@ -88,7 +88,9 @@ class IndexStatus(BaseModel):
     화면은 그 사이 진행 상황을, 실패하면 사유(error)를 보여준다.
     """
 
-    status: str  # pending | running | completed | failed
+    # skipped 는 실패가 아니라 **만들지 않기로 정한 것**이다 (청크 수가 상한을 넘었다).
+    # 그때 chunks_total 은 실제로 나온 청크 수이고 error 에 사유가 들어간다.
+    status: str  # pending | running | completed | failed | skipped
     chunks_total: int = 0
     chunks_done: int = 0
     # 남은 예상 시간(초). 진행이 없어 계산할 수 없으면 None.

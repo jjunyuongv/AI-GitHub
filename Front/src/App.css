@@ -536,6 +536,11 @@ main {
   border-left-color: var(--danger);
 }
 
+/* 실패가 아니라 정한 대로 된 것이다 — 빨강(위험)도 파랑(진행 중)도 아닌 중립으로 둔다. */
+.chat-index.skipped {
+  border-left-color: var(--fg-muted);
+}
+
 .msg {
   padding: 10px 12px;
   border: 1px solid var(--border-muted);

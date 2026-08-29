@@ -15,6 +15,7 @@ import time
 from app.config import (
     FULL_INJECTION_MAX_SOURCE_BYTES,
     FULL_INJECTION_MAX_TOKENS,
+    MAX_INDEX_CHUNKS,
     MAX_STORED_SOURCE_BYTES,
 )
 from app.core.chunker import chunk_files
@@ -58,6 +59,23 @@ def _lock_for(snapshot_id: int) -> threading.Lock:
 MAX_HANDOFF_CHARS = 20 * 1024 * 1024
 
 
+# 상한의 몇 할부터 로그로 알릴지. **데모가 조용히 깨지는 것을 막는 감시선이다.**
+#
+# 상한을 넘으면 도구가 안 붙고 요약만으로 답하는데, 그 판정은 저장소에 push 가 있어
+# 새 스냅샷이 생길 때 일어난다 — 아무도 안 보는 때 바뀌고 아무 신호도 없다.
+# 데모 저장소가 그렇게 되면 tool use 경로가 화면에서 사라진다(README 의 스크린샷과
+# 인용 정확도 표가 그 경로를 가리킨다).
+#
+# **0.8 은 "경고를 보고 나서 손 쓸 여유"로 정했다** — 상한의 20% 가 남는다
+# (상한 300 이면 60청크 ≈ 28KB 소스). 더 높이면 활주로가 그만큼 짧아진다.
+#
+# **테스트가 아니라 로그인 이유**: 감시 대상은 살아 있는 저장소인데, 평가셋 캐시는
+# 얼어 있는 사본이고(`Back/cache/` 는 커밋되지 않는다) CI 도 없다. 테스트로 만들면
+# 한 기계에서만 도는, 자라지 않는 값을 재는 테스트가 된다. 여기는 실제로 색인되는
+# 그 스냅샷을 재고, 빌드당 한 줄이라 상시 점등되지도 않는다.
+CHUNK_CAP_WARN_RATIO = 0.8
+
+
 def _small_enough_to_hand_off(files: dict[str, str] | None) -> bool:
     """큐에 들고 있어도 될 크기인가. 문자 수로 잰다 — 코드는 대체로 1자 1바이트다."""
     if not files:
@@ -79,6 +97,8 @@ def start(
     다시 만들지 않는다 — 배포 직후 모든 저장소가 한꺼번에 임베딩을 시작하면 그게 곧
     장애다. 재색인은 관리자가 트리거한다(/admin/api/rebuild-index).
 
+    **청크 상한을 넘어 건너뛴 스냅샷도 다시 넣지 않는다.** 같은 소스라 결과가 같다.
+
     `files` 를 주면 **그것을 쓰고 tarball 을 다시 받지 않는다.** 호출부가 방금 받은
     소스를 넘기는 용도다(`/analyze` 의 정적분석). 너무 크면 조용히 무시하고 색인이
     스스로 받는다 — `MAX_HANDOFF_CHARS` 참고.
@@ -88,6 +108,11 @@ def start(
     """
     try:
         if index_status.is_completed(snapshot_id, table=table):
+            return False
+        # 상한을 넘어 건너뛴 스냅샷은 다시 넣지 않는다. 소스가 고정돼 있어 결과가
+        # 같은데, begin() 은 pending/running 만 막으므로 이 검사가 없으면 **질문마다**
+        # tarball 을 다시 받아 같은 답을 낸다 (chat.py 가 질문마다 start() 를 부른다).
+        if index_status.is_skipped(snapshot_id, table=table):
             return False
     except DB_ERRORS as e:
         logger.warning("인덱싱 상태를 읽지 못해 건너뜁니다 (스냅샷 %s): %s", snapshot_id, e)
@@ -143,6 +168,11 @@ def run_build(
             pieces = chunk_files(
                 files, count_tokens=count_tokens, token_limit=input_limit()
             )
+            # 청킹은 이미 임베딩 앞이라 여기서 청크 수를 안다. 상한 판정에 필요한 것이
+            # 그것뿐이라 큐도 워커도 건드리지 않는다 (실측 236청크 0.76초).
+            if _skip_over_cap(build_id, owner, repo, len(pieces)):
+                return
+            _warn_if_near_cap(owner, repo, len(pieces))
             index_status.set_total(build_id, len(pieces))
 
             embed_started = time.perf_counter()
@@ -258,6 +288,46 @@ def _try_full_injection(
         owner, repo, len(files), tokens, FULL_INJECTION_MAX_TOKENS,
     )
     return True
+
+
+def _skip_over_cap(build_id: int, owner: str, repo: str, chunks: int) -> bool:
+    """청크가 상한을 넘으면 건너뛰기로 표시하고 True. 상한이 0이면 항상 False.
+
+    **거절이 아니다.** 요약과 파일 목록으로는 그대로 답한다 — 없어지는 것은 코드 검색과
+    도구뿐이다. 그 상태는 이미 있던 것이라(색인이 안 끝난 스냅샷) 새로 만들 동작이 없다.
+
+    **`failed` 로 쓰지 않는다.** 실패가 아니라 안 하기로 정한 것이고, 무엇보다
+    재시도 여부가 다르다 — `start()` 가 이 상태를 보고 다시 큐에 넣지 않는다.
+    """
+    if not MAX_INDEX_CHUNKS or chunks <= MAX_INDEX_CHUNKS:
+        return False
+
+    reason = f"코드 조각 {chunks:,}개가 상한 {MAX_INDEX_CHUNKS:,}개를 넘습니다"
+    logger.warning(
+        "%s/%s 는 색인을 만들지 않습니다 — %s. 요약만으로 답합니다.", owner, repo, reason
+    )
+    try:
+        index_status.skip(build_id, chunks, reason)
+    except DB_ERRORS as e:
+        # 표시를 못 남기면 다음 질문에 다시 시도하게 된다. 낭비지만 틀리지는 않는다.
+        logger.warning("색인을 건너뛴 것을 기록하지 못했습니다 (빌드 %s): %s", build_id, e)
+    return True
+
+
+def _warn_if_near_cap(owner: str, repo: str, chunks: int) -> None:
+    """상한에 가까워지면 로그로 알린다. 색인은 그대로 진행한다.
+
+    왜 이 감시선이 필요한지는 `CHUNK_CAP_WARN_RATIO` 주석에 있다.
+    """
+    if not MAX_INDEX_CHUNKS:
+        return
+    if chunks < MAX_INDEX_CHUNKS * CHUNK_CAP_WARN_RATIO:
+        return
+    logger.warning(
+        "%s/%s 가 청크 상한에 가깝습니다 — %d / %d (%.0f%%)."
+        " 넘으면 코드 검색과 도구가 붙지 않습니다.",
+        owner, repo, chunks, MAX_INDEX_CHUNKS, chunks / MAX_INDEX_CHUNKS * 100,
+    )
 
 
 def _prune(snapshot_id: int, table: str | None) -> None:

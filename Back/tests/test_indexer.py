@@ -394,3 +394,82 @@ def test_old_builds_are_pruned_after_a_rebuild(snapshot_id, fake_sources):
 
     builds = index_status.list_builds(snapshot_id, table=TABLE)
     assert len(builds) == 2
+
+
+# --- 청크 상한 -----------------------------------------------------------------
+#
+# 경계 판정 자체(딱 상한 / 하나 초과 / 0이면 끔)는 DB 없이 도는
+# `test_index_chunk_cap.py` 에 있다. 여기서는 **DB 에 무엇이 남는가**를 본다.
+
+
+@pytest.fixture
+def no_worker(monkeypatch):
+    """워커를 띄우지 않는다 — start() 를 부르는 테스트가 실제 인덱싱을 시작하면 안 된다."""
+    from app.services import index_queue
+
+    monkeypatch.setattr(index_queue, "_ensure_worker", lambda: None)
+
+
+def test_exactly_at_the_cap_still_indexes(snapshot_id, fake_sources, monkeypatch):
+    """대역이 청크 3개이므로 상한 3 은 통과해야 한다 — 경계의 아래쪽."""
+    monkeypatch.setattr(indexer, "MAX_INDEX_CHUNKS", 3)
+
+    build_id = _index_now(snapshot_id)
+
+    assert index_status.get(snapshot_id, table=TABLE)["status"] == "completed"
+    assert chunk_store.count(build_id, table=TABLE) == 3
+
+
+def test_over_the_cap_is_skipped_not_failed(snapshot_id, fake_sources, monkeypatch):
+    """상한을 넘으면 청크를 하나도 만들지 않고 `skipped` 로 끝난다.
+
+    **`failed` 가 아니다.** 실패가 아니라 만들지 않기로 정한 것이고, 둘을 한 값에
+    담으면 진짜 실패 건수를 셀 수 없게 된다.
+    """
+    monkeypatch.setattr(indexer, "MAX_INDEX_CHUNKS", 2)
+
+    build_id = _index_now(snapshot_id)
+
+    row = index_status.get(snapshot_id, table=TABLE)
+    assert row["status"] == index_status.SKIPPED
+    assert row["chunks_total"] == 3          # 실제로 나온 수 — 화면이 이것을 보여준다
+    assert "3" in row["error"] and "2" in row["error"]
+    assert chunk_store.count(build_id, table=TABLE) == 0
+
+
+def test_a_skipped_build_is_not_ready_and_gets_no_tools(
+    snapshot_id, fake_sources, monkeypatch
+):
+    """도구가 붙지 않아야 요약만으로 답한다 — 빈 검색이 '저장소에 없다'가 되면 안 된다."""
+    monkeypatch.setattr(indexer, "MAX_INDEX_CHUNKS", 2)
+    _index_now(snapshot_id)
+
+    assert indexer.is_ready(snapshot_id, table=TABLE) is False
+
+
+def test_a_skipped_snapshot_is_not_queued_again(
+    snapshot_id, fake_sources, monkeypatch, no_worker
+):
+    """**이것이 새 상태를 둔 결정적 이유다.**
+
+    `begin()` 은 pending/running 만 막으므로, 이 검사가 없으면 `chat.py` 가 질문마다
+    부르는 `start()` 가 매번 새 빌드를 만든다 — tarball 을 다시 받아 같은 답을 낸다.
+    """
+    monkeypatch.setattr(indexer, "MAX_INDEX_CHUNKS", 2)
+    _index_now(snapshot_id)
+    before = len(index_status.list_builds(snapshot_id, table=TABLE))
+
+    assert indexer.start(snapshot_id, "react", "react", table=TABLE) is False
+    assert len(index_status.list_builds(snapshot_id, table=TABLE)) == before
+
+
+def test_a_failed_snapshot_is_still_retried(snapshot_id, fake_sources, no_worker):
+    """실패는 다시 해볼 값이 있다 — 상한 초과와 갈리는 지점이 여기다.
+
+    이 테스트가 없으면 `is_skipped()` 를 `status != 'completed'` 로 넓게 잡아도
+    위 테스트가 통과해, 재시도 경로를 통째로 막아 놓고 모르게 된다.
+    """
+    build_id = index_status.begin(snapshot_id, table=TABLE)
+    index_status.fail(build_id, "일시적 오류")
+
+    assert indexer.start(snapshot_id, "react", "react", table=TABLE) is True

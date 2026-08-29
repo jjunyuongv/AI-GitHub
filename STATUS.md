@@ -49,6 +49,7 @@
 | `MAX_SOURCE_FILE_BYTES` | `str(200 * 1024)` | `app.config` | `MAX_SOURCE_FILE_BYTES` |
 | `MAX_SOURCE_FILES` | `'3000'` | `app.config` | `MAX_SOURCE_FILES` |
 | `MAX_STORED_SOURCE_BYTES` | `str(20 * 1024 * 1024)` | `app.config` | `MAX_STORED_SOURCE_BYTES` |
+| `MAX_INDEX_CHUNKS` | `'300'` | `app.config` | `MAX_INDEX_CHUNKS` |
 | `FULL_INJECTION_MAX_TOKENS` | `'57000'` | `app.config` | `FULL_INJECTION_MAX_TOKENS` |
 | `FULL_INJECTION_MAX_SOURCE_BYTES` | `str(500 * 1024)` | `app.config` | `FULL_INJECTION_MAX_SOURCE_BYTES` |
 | `DAILY_LLM_CALL_LIMIT` | `'500'` | `app.config` | `DAILY_LLM_CALL_LIMIT` |
@@ -122,6 +123,7 @@ AST 에서 자동 산출한다(sha256 앞 8자). 청킹을 고치면 자동으�
 |---|---|---|---|
 | `TOP_K` | `8` | `app.services.indexer` | — |
 | `MAX_HANDOFF_CHARS` | `20971520` | `app.services.indexer` | — |
+| `CHUNK_CAP_WARN_RATIO` | `0.8` | `app.services.indexer` | — |
 | `LOW_INFO_PENALTY` | `0.03` | `app.services.indexer` | — |
 | `CANDIDATE_MULTIPLIER` | `5` | `app.services.indexer` | — |
 | `STYLE_LANGUAGES` | `2개` | `app.services.indexer` | — |
@@ -342,6 +344,21 @@ LLM 을 다시 부를 필요가 없다.
   계속 답한다. 실패해도 활성 포인터는 그대로다(`Back/app/db/index_status.py`).
 - **작은 저장소는 검색을 아예 안 만든다.** 소스 전체를 프롬프트에 넣고 빌드를 청크 0개로
   완료 처리한다(`Back/app/services/indexer.py`). 판정은 저장소 이름이 아니라 크기로만 한다.
+- **너무 큰 저장소도 검색을 안 만든다. 다만 '완료'가 아니라 `skipped` 다.**
+  청크 수가 `MAX_INDEX_CHUNKS`(기본 300 ≈ EC2 9.5분)를 넘으면 임베딩을 하지 않고
+  빌드를 `skipped` 로 닫는다. **거절이 아니다** — 요약과 파일 목록으로는 그대로 답하고,
+  없어지는 것은 코드 검색과 도구뿐이다(색인이 안 끝난 스냅샷과 같은 상태다).
+  판정은 **청킹을 마친 뒤 실제 청크 수로** 한다. 청킹은 실측 0.76초(236청크)라 상한이
+  지키는 시간의 2% 도 안 되고, 바이트로 추정하면 언어에 따라 문자/청크가 431~708 로
+  1.64배 벌어져 경계에서 틀린다.
+  **`failed` 와 나눈 이유는 문구가 아니라 재시도다** — `begin()` 은 pending/running 만
+  막으므로, 종료 상태를 구분하지 않으면 `/chat` 이 질문마다 부르는 `start()` 가 매번
+  새 빌드를 만들어 tarball 을 다시 받는다. 저장소가 줄면 **새 스냅샷**에서 다시 잰다.
+- **상한의 80%(`CHUNK_CAP_WARN_RATIO`)에 닿으면 로그로 알린다.** 데모 저장소가 상한을
+  넘는 순간 tool use 경로가 화면에서 사라지는데, 그 일은 push 로 새 스냅샷이 생길 때
+  일어나 **아무 신호가 없다.** 테스트로 만들지 않은 이유는 평가셋 캐시가 얼어 있는
+  사본이고(`Back/cache/` 는 커밋되지 않는다) CI 도 없어서다 — 자라지 않는 값을 한
+  기계에서만 재게 된다.
 - **소스 원문을 스냅샷 단위로 보관한다** — `snapshot_source_files` 테이블
   (`Back/app/db/sources.py`). **전체 주입 여부와 무관하게** 채운다. 전에는 원문이 남는 곳이
   전체 주입 번들뿐이라, 소스가 이미 프롬프트에 다 들어간 저장소에만 원문이 있고 큰

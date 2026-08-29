@@ -9,7 +9,12 @@
 snapshot_index_status.active_build_id 만 옮기면, 그동안 옛 빌드로 계속 답할 수 있다.
 포인터를 되돌리면 그대로 롤백이다.
 
-상태는 pending → running → completed | failed 로만 움직인다.
+상태는 pending → running → completed | failed | skipped 로만 움직인다.
+
+**skipped 는 failed 가 아니다.** 색인을 만들려다 실패한 것이 아니라 **만들지 않기로
+정한 것**이다(청크 수가 상한을 넘었다). 둘을 한 값에 담으면 진짜 실패 건수를 셀 수
+없게 되고, 더 중요하게는 **재시도 여부가 갈린다** — 실패는 다시 해볼 값이 있지만
+상한 초과는 같은 스냅샷에서 결과가 절대 바뀌지 않는다(services/indexer.py 의 start).
 """
 
 from psycopg import sql
@@ -21,6 +26,7 @@ PENDING = "pending"
 RUNNING = "running"
 COMPLETED = "completed"
 FAILED = "failed"
+SKIPPED = "skipped"
 
 # 청크가 들어갈 수 있는 모든 테이블. `list_all()` 이 실제 청크 수를 셀 때 전부 훑는다.
 #
@@ -188,6 +194,45 @@ def fail(build_id: int, error: str) -> None:
                 WHERE id = %s""",
             (error, build_id),
         )
+
+
+def skip(build_id: int, chunks: int, reason: str) -> None:
+    """상한을 넘어 색인을 만들지 않았다고 표시한다. 실패가 아니다.
+
+    `chunks` 는 **실제로 나온 청크 수**다. 화면이 "몇 개라서 넘었는지"를 보여줘야
+    사용자가 얼마나 큰지 가늠할 수 있다 — "너무 큽니다"만으로는 다른 저장소는 되는지
+    알 수 없다. 그래서 chunks_total 에 넣는다(chunks_done 은 0 그대로 — 하나도
+    임베딩하지 않았다).
+
+    **활성 포인터는 건드리지 않는다.** fail() 과 같은 이유다 — 재색인이 이렇게 끝나도
+    쓰고 있던 옛 색인은 그대로 살아 있어야 한다.
+    """
+    with cursor() as cur:
+        cur.execute(
+            """UPDATE index_builds
+                  SET status = 'skipped', chunks_total = %s, error = %s,
+                      updated_at = now(), completed_at = now()
+                WHERE id = %s""",
+            (chunks, reason, build_id),
+        )
+
+
+def is_skipped(snapshot_id: int, table: str | None = None) -> bool:
+    """이 스냅샷을 상한 초과로 건너뛴 적이 있는지.
+
+    **재시도를 막는 데만 쓴다.** 같은 스냅샷은 소스가 고정돼 있어 다시 청킹해도 결과가
+    같으므로, 질문마다 tarball 을 다시 받아 같은 답을 내는 것은 낭비일 뿐이다
+    (begin() 은 pending/running 만 막으므로 이 검사가 없으면 실제로 그렇게 된다).
+    저장소가 줄면 **새 스냅샷**이 생기고 거기서 다시 잰다.
+    """
+    with cursor(commit=False) as cur:
+        cur.execute(
+            """SELECT 1 FROM index_builds
+                WHERE snapshot_id = %s AND table_name = %s AND status = 'skipped'
+                LIMIT 1""",
+            (snapshot_id, _table(table)),
+        )
+        return cur.fetchone() is not None
 
 
 def activate(snapshot_id: int, build_id: int, table: str | None = None) -> bool:
