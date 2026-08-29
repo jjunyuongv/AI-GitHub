@@ -79,6 +79,17 @@ def _normalized_source(func) -> str:
     주석(`#`)은 AST 에 남지 않으므로 그냥 사라지고, docstring 은 문자열 리터럴이라
     남으므로 지운다. 이 저장소는 "왜 이 값인가"를 주석과 docstring 으로 길게 남기는
     편이라, 그런 편집마다 모든 인덱스가 '재색인 필요'로 뜨면 이 표시를 아무도 믿지 않게 된다.
+
+    **`ast.dump` 가 아니라 `ast.unparse` 를 쓴다. 판 사이에서 흔들렸기 때문이다.**
+    `ast.dump` 는 3.13 에서 기본 출력이 바뀌었다(`show_empty` 가 생기고 기본이 False).
+    그래서 같은 코드·같은 설정인데 **인터프리터 판만 달라도 해시가 갈렸다** — 로컬
+    3.14 가 `822bb217`, 컨테이너 3.12 가 `7d06885c` 를 냈고, 양쪽이 서로를 영원히
+    낡음으로 보는 상태였다. 청크 경계도 벡터도 안 바뀌는데 뜨는 경고라 위 문단이
+    경계한 바로 그것이다. 경위는 `docs/log/12-index-time.md`.
+
+    **`ast.unparse` 도 stdlib 렌더링이라 판이 바뀌면 또 흔들릴 수 있다.**
+    그래서 `tests/test_chunk_rule.py` 가 표본 하나의 정규화 결과를 리터럴로 고정해
+    둔다 — 렌더링이 바뀌면 배포에서 색인이 조용히 낡는 대신 그 테스트가 깨진다.
     """
     tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
     for node in ast.walk(tree):
@@ -92,7 +103,7 @@ def _normalized_source(func) -> str:
             and isinstance(first.value.value, str)
         ):
             body.pop(0)
-    return ast.dump(tree)
+    return ast.unparse(tree)
 
 
 def rule_version() -> str:

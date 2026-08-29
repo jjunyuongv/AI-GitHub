@@ -94,6 +94,39 @@ def test_comments_do_not_change_the_rule():
     assert normalized(_variant("original")) != normalized(_variant("logic"))
 
 
+def _drift_sample(items, limit=3):
+    """지워질 docstring."""
+    # 지워질 주석
+    picked = [x for x in items if x > limit]
+    if not picked:
+        return None
+    return {"n": len(picked), "first": picked[0]}
+
+
+def test_normalized_output_is_pinned():
+    """정규화 결과를 리터럴로 고정한다 — 파이썬 판이 렌더링을 바꾸면 여기서 깨진다.
+
+    **왜 필요한가.** 전에는 `ast.dump` 를 썼는데 3.13 에서 기본 출력이 바뀌어,
+    같은 코드·같은 설정인데 로컬(3.14)과 컨테이너(3.12)가 서로 다른 해시를 냈다.
+    청크도 벡터도 안 바뀌는데 양쪽이 서로를 낡음으로 보는 상태였고, **아무도 그것을
+    눈치채지 못했다** — 배포에서 색인이 조용히 낡을 뿐 깨지는 것이 없었기 때문이다.
+
+    그래서 렌더링을 **여기서** 붙잡는다. 판을 올릴 때 이 테스트가 먼저 깨지면
+    그 자리에서 보인다. 해시가 아니라 문자열을 대조하는 것은 깨졌을 때 무엇이
+    달라졌는지 바로 읽으려는 것이다.
+
+    **표본은 이 파일 안에 있다.** 실제 청킹 함수를 쓰면 청킹을 고칠 때마다 깨져서
+    판 드리프트와 구분이 안 된다.
+    """
+    assert chunk_rule._normalized_source(_drift_sample) == (
+        "def _drift_sample(items, limit=3):\n"
+        "    picked = [x for x in items if x > limit]\n"
+        "    if not picked:\n"
+        "        return None\n"
+        "    return {'n': len(picked), 'first': picked[0]}"
+    )
+
+
 def test_legacy_marker_is_not_a_valid_rule():
     """'legacy' 는 규칙 값이 아니라 '무슨 규칙인지 모른다'는 표식이다."""
     assert chunk_rule.LEGACY == "legacy"
