@@ -17,7 +17,7 @@ from app.schemas.schemas import (
     FileView,
     IndexStatus,
 )
-from app.services import citations, indexer, rate_limit, run_log, tools
+from app.services import citations, indexer, login_session, rate_limit, run_log, tools
 from app.services.context_builder import number_lines
 from app.services.claude_client import (
     CHAT_SYSTEM_PROMPT,
@@ -66,10 +66,27 @@ def _stored_paths(snapshot_id: int) -> list[str]:
         return []
 
 
-def _load_session(session_id: str) -> dict:
-    """세션을 읽는다. 없으면 404, DB를 못 쓰면 503.
+def _load_session(session_id: str, request: Request) -> dict:
+    """세션을 읽고 **이 요청이 볼 수 있는지 확인한다.** 없으면 404, DB를 못 쓰면 503.
 
     /analyze 와 달리 대화는 DB 없이 대신할 방법이 없다. 조용히 넘어가지 않고 503을 낸다.
+
+    ## 인가는 여기 한 곳에만 있다
+
+    `/chat` 의 네 경로(질문·이력·파일·색인 상태)가 전부 이 함수를 거친다. 검사를 각
+    경로에 흩어 두면 새 경로를 더할 때 빠뜨리고, 빠뜨려도 아무 신호가 안 난다.
+
+    ## 규칙
+
+    - `user_id` 가 **NULL 인 대화는 누구나 볼 수 있다.** 익명 대화이고, 그 동작은
+      로그인 도입 전과 정확히 같다 — 세션 id 를 가진 사람이 곧 주인이다
+    - `user_id` 가 있으면 **그 사람만** 볼 수 있다. 다른 사용자도, 익명도 막힌다
+
+    ## 왜 403 이 아니라 404 인가
+
+    403 은 "그 대화는 있는데 네 것이 아니다"를 알려준다. 세션 id 는 추측할 수 없는
+    값이라 그 사실만으로 큰일이 나지는 않지만, **없는 것과 남의 것을 구분해 줄 이유가
+    없다.** 메시지도 기존 문구를 그대로 쓴다.
     """
     # UUID 가 아닌 값을 그대로 넘기면 DB 가 형식 오류를 내고 503으로 뭉개진다.
     try:
@@ -83,6 +100,9 @@ def _load_session(session_id: str) -> dict:
         raise HTTPException(status_code=503, detail=DB_UNAVAILABLE)
     if not session:
         raise HTTPException(status_code=404, detail=SESSION_NOT_FOUND)
+    owner_id = session["user_id"]
+    if owner_id is not None and owner_id != login_session.current_user_id(request):
+        raise HTTPException(status_code=404, detail=SESSION_NOT_FOUND)
     return session
 
 
@@ -92,11 +112,15 @@ def chat(req: ChatRequest, request: Request):
     if not question:
         raise HTTPException(status_code=400, detail="질문이 비어 있습니다.")
 
-    session = _load_session(req.session_id)
+    session = _load_session(req.session_id, request)
 
     # 질문 하나가 LLM 호출 하나다. /analyze 캐시 미스와 같은 무게로 센다.
+    #
+    # **소유자를 다시 읽지 않고 세션의 것을 쓴다.** 여기 도달했다는 것은 위에서 이미
+    # "이 요청이 이 대화를 볼 수 있다"를 통과했다는 뜻이고, 익명 대화(NULL)면 그대로
+    # None 이 되어 사용자 층이 안 걸린다 — 로그인 도입 전과 같은 경로다.
     try:
-        rate_limit.check_and_reserve(rate_limit.client_ip(request))
+        rate_limit.check_and_reserve(rate_limit.client_ip(request), session["user_id"])
     except rate_limit.RateLimitExceeded as e:
         raise HTTPException(
             status_code=e.status_code,
@@ -196,7 +220,7 @@ def chat(req: ChatRequest, request: Request):
 
 
 @router.get("/chat/{session_id}/file", response_model=FileView)
-def file_view(session_id: str, path: str, start: int, end: int):
+def file_view(session_id: str, path: str, start: int, end: int, request: Request):
     """인용이 가리킨 파일 조각. 앞뒤 여유를 붙여 돌려준다.
 
     **세션의 스냅샷에 묶인다.** `path` 는 그 스냅샷에 보관된 것만 읽는다 — 임의 경로를
@@ -206,7 +230,7 @@ def file_view(session_id: str, path: str, start: int, end: int):
     도구의 `read_file` 과 **같은 형식**(`12|코드`)으로 준다. 형식이 갈리면 화면과 모델이
     다른 것을 보게 된다. GitHub·LLM 호출이 없어 남용 제한도 걸지 않는다.
     """
-    session = _load_session(session_id)
+    session = _load_session(session_id, request)
     try:
         content = source_store.get_file(session["snapshot_id"], path)
     except DB_ERRORS:
@@ -240,13 +264,13 @@ def file_view(session_id: str, path: str, start: int, end: int):
 
 
 @router.get("/chat/{session_id}/index", response_model=IndexStatus)
-def index_status_view(session_id: str):
+def index_status_view(session_id: str, request: Request):
     """코드 색인 진행 상황. 외부 호출이 없어 남용 제한도 걸지 않는다.
 
     상태 행이 아직 없으면 pending 으로 답한다 — /analyze 가 인덱싱을 시작하기
     직전이거나, DB 에 기록되기 전 찰나에 화면이 물어본 경우다.
     """
-    session = _load_session(session_id)
+    session = _load_session(session_id, request)
     try:
         row = index_status.get(session["snapshot_id"])
     except DB_ERRORS:
@@ -282,9 +306,9 @@ def _eta_seconds(row: dict) -> int | None:
 
 
 @router.get("/chat/{session_id}", response_model=ChatHistory)
-def history(session_id: str):
+def history(session_id: str, request: Request):
     """대화 이력. GitHub·LLM 호출이 없어 남용 제한도 걸지 않는다."""
-    session = _load_session(session_id)
+    session = _load_session(session_id, request)
     try:
         messages = chats.list_messages(session_id)
     except DB_ERRORS:

@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import admin, analyze, chat, health
+from app.api import admin, analyze, auth, chat, health
 from app.config import FRONTEND_ORIGIN
 from app.core import embeddings
 from app.core.chunk_rule import rule_version
@@ -79,6 +79,11 @@ app.add_middleware(
 )
 
 app.include_router(health.router)
+# **라우터는 언제나 붙인다. 켜고 끄는 판정은 경로 안에 있다.**
+# 여기서 조건부로 include 하면 그 판정이 **기동 시점에 굳어서** 테스트가
+# 껐다 켜며 확인할 수 없다 — 꺼진 상태의 동작을 고정하는 것이 이 기능의
+# 유일한 안전장치인데, 그걸 검사할 방법이 없어진다 (app/api/auth.py 머리말).
+app.include_router(auth.router)
 app.include_router(analyze.router)
 app.include_router(chat.router)
 app.include_router(admin.router)

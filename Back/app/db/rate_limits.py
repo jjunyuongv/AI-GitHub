@@ -36,10 +36,16 @@ def reserve(
     ip_limit: int,
     window_seconds: int,
     seconds_until_tomorrow: int,
+    user_id: int | None = None,
+    user_limit: int = 0,
 ) -> dict | None:
     """이번 요청 몫을 예약한다. 통과하면 None, 막히면 {reason, retry_after}.
 
     상한이 0 이면 그 검사를 건너뛴다(파일 구현과 같은 규칙).
+
+    `user_id` 는 로그인한 요청에만 있다. **None 이면 사용자 층을 건너뛰고, 그러면
+    이 함수가 하는 일이 로그인 도입 전과 글자 그대로 같다** — `rate_limit_user_daily`
+    에 행도 안 생긴다.
     """
     try:
         with cursor() as cur:
@@ -95,6 +101,26 @@ def reserve(
                     "오늘 분석 한도를 모두 사용했습니다. 내일 다시 시도해 주세요.",
                     seconds_until_tomorrow,
                 )
+
+            # 사용자 층. **서비스 상한을 통과한 뒤에 본다** — 순서가 반대면 서비스가
+            # 이미 천장에 닿았는데 사용자 카운터만 올라간다.
+            #
+            # 위 일일 카운터와 같은 한 문장 관용구다. 상한 판정도 같은 경계로 본다
+            # (이번 요청을 포함한 값이라 초과 `>`).
+            if user_id is not None and user_limit:
+                cur.execute(
+                    """INSERT INTO rate_limit_user_daily (day, user_id, calls)
+                            VALUES (%s, %s, 1)
+                       ON CONFLICT (day, user_id) DO UPDATE
+                              SET calls = rate_limit_user_daily.calls + 1
+                        RETURNING calls""",
+                    (day, user_id),
+                )
+                if cur.fetchone()["calls"] > user_limit:
+                    raise _Rejected(
+                        "오늘 사용할 수 있는 질문 수를 다 썼습니다. 내일 다시 시도해 주세요.",
+                        seconds_until_tomorrow,
+                    )
 
             if ip_limit:
                 cur.execute("INSERT INTO rate_limit_hits (ip) VALUES (%s)", (ip,))

@@ -89,6 +89,10 @@ def db(db_dsn, monkeypatch):
 
     사용량·남용 방지 테이블은 repos 에 매여 있지 않아 **따로 비운다** —
     CASCADE 를 믿고 빠뜨리면 앞선 테스트의 카운터가 남아 상한 테스트가 흔들린다.
+
+    `users` 도 같은 이유로 여기 있다. 그쪽은 CASCADE 로 `logins` 와
+    `rate_limit_user_daily` 를 함께 데려간다 — 사용자별 상한 테스트가 앞선 테스트의
+    카운터를 물려받으면 조용히 흔들린다.
     """
     monkeypatch.setattr(pool, "DATABASE_URL", db_dsn)
     pool.close()  # 다른 DSN 으로 열려 있던 풀은 버린다
@@ -96,5 +100,6 @@ def db(db_dsn, monkeypatch):
     with pool.cursor() as cur:
         cur.execute("TRUNCATE repos CASCADE")
         cur.execute("TRUNCATE runs, rate_limit_daily, rate_limit_hits")
+        cur.execute("TRUNCATE users CASCADE")
     yield
     pool.close()

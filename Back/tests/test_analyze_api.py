@@ -10,7 +10,14 @@ from fastapi.testclient import TestClient
 
 from app.api import analyze as analyze_api
 from app.main import app
-from app.services import allowlist, rate_limit, run_log, summary_cache
+from app.services import (
+    allowlist,
+    login_session,
+    oauth,
+    rate_limit,
+    run_log,
+    summary_cache,
+)
 
 ACCESS = {
     "owner": "React",
@@ -105,11 +112,14 @@ def sessions(monkeypatch):
     class FakeChats:
         def __init__(self):
             self.created: list[int] = []
+            # 새 세션에 붙은 소유자. 로그인이 꺼져 있으면 전부 None 이다.
+            self.owners: list[int | None] = []
             self.looked_up: list[str] = []
             self.existing: dict[str, dict] = {}
 
-        def create_session(self, snapshot_id):
+        def create_session(self, snapshot_id, user_id=None):
             self.created.append(snapshot_id)
+            self.owners.append(user_id)
             return f"session-for-{snapshot_id}"
 
         def get_session(self, session_id):
@@ -145,7 +155,7 @@ EXISTING = "3f0d8f6e-1b2c-4d5e-8a9b-0c1d2e3f4a5b"
 def test_existing_session_on_same_snapshot_is_reused(client, llm_calls, sessions, monkeypatch):
     """같은 스냅샷을 보고 있으면 새로 만들지 않는다 — 빈 세션이 쌓이던 원인이다."""
     monkeypatch.setattr(summary_cache, "get", lambda access: dict(SNAPSHOT))
-    sessions.existing[EXISTING] = {"id": EXISTING, "snapshot_id": 42}
+    sessions.existing[EXISTING] = {"id": EXISTING, "snapshot_id": 42, "user_id": None}
 
     res = _analyze(client, EXISTING)
 
@@ -157,7 +167,7 @@ def test_existing_session_on_same_snapshot_is_reused(client, llm_calls, sessions
 def test_session_on_a_different_snapshot_is_not_reused(client, llm_calls, sessions, monkeypatch):
     """스냅샷이 다르면 그 세션은 **옛 코드**를 보고 있다. 이어 쓰면 안 된다."""
     monkeypatch.setattr(summary_cache, "get", lambda access: dict(SNAPSHOT))
-    sessions.existing[EXISTING] = {"id": EXISTING, "snapshot_id": 41}  # 옛 스냅샷
+    sessions.existing[EXISTING] = {"id": EXISTING, "snapshot_id": 41, "user_id": None}  # 옛 스냅샷
 
     res = _analyze(client, EXISTING)
 
@@ -195,7 +205,7 @@ def test_reuse_also_works_on_a_cache_miss(client, llm_calls, sessions, monkeypat
     """캐시 히트 경로에서만 고치면 절반만 고친 것이다 — 미스에서도 재사용해야 한다."""
     monkeypatch.setattr(summary_cache, "get", lambda access: None)
     monkeypatch.setattr(summary_cache, "put", lambda access, **kwargs: dict(SNAPSHOT))
-    sessions.existing[EXISTING] = {"id": EXISTING, "snapshot_id": 42}
+    sessions.existing[EXISTING] = {"id": EXISTING, "snapshot_id": 42, "user_id": None}
 
     res = _analyze(client, EXISTING)
 
@@ -366,7 +376,7 @@ def test_session_failure_does_not_break_the_response(client, llm_calls, monkeypa
     monkeypatch.setattr(summary_cache, "put", lambda access, **kwargs: dict(SNAPSHOT))
 
     class DeadChats:
-        def create_session(self, snapshot_id):
+        def create_session(self, snapshot_id, user_id=None):
             raise psycopg.OperationalError("연결 실패")
 
     monkeypatch.setattr(analyze_api, "chats", DeadChats())
@@ -433,3 +443,88 @@ def test_목록이_비면_임의_저장소가_통과한다(client, llm_calls, gi
 
     assert res.status_code == 200
     assert github_calls == [("facebook", "react")]
+
+
+# --- 세션 소유자 -------------------------------------------------------------
+#
+# `session_id` 는 **클라이언트가 보낸 값**이다. 스냅샷만 보고 재사용하면 남의 세션
+# id 를 적어 보내는 것만으로 그 대화를 이어 쓸 수 있다 — 이력이 프롬프트에 실리고
+# 답변이 그 위에 쌓인다. 그래서 주인도 함께 본다.
+
+
+class _Logins:
+    def __init__(self, mapping):
+        self.mapping = mapping
+
+    def get_login(self, login_id):
+        return self.mapping.get(login_id)
+
+
+@pytest.fixture
+def signed_in(monkeypatch):
+    monkeypatch.setattr(oauth, "GITHUB_OAUTH_CLIENT_ID", "test-client-id")
+    monkeypatch.setattr(
+        login_session, "users",
+        _Logins({"cookie-7": {"id": 7, "login": "seven", "avatar_url": None}}),
+    )
+
+
+def test_a_new_session_is_anonymous_while_login_is_off(
+    client, llm_calls, sessions, monkeypatch
+):
+    """**로그인이 꺼져 있으면 소유자가 안 붙는다.** 지금 배포의 상태다.
+
+    붙어 버리면 기능을 껐을 때 그 대화를 아무도 못 연다.
+    """
+    monkeypatch.setattr(oauth, "GITHUB_OAUTH_CLIENT_ID", "")
+    monkeypatch.setattr(summary_cache, "get", lambda access: dict(SNAPSHOT))
+
+    _analyze(client)
+
+    assert sessions.owners == [None]
+
+
+def test_a_new_session_belongs_to_the_signed_in_user(
+    client, llm_calls, sessions, signed_in, monkeypatch
+):
+    monkeypatch.setattr(summary_cache, "get", lambda access: dict(SNAPSHOT))
+    client.cookies.set(login_session.COOKIE_NAME, "cookie-7")
+
+    _analyze(client)
+
+    assert sessions.owners == [7]
+
+
+def test_another_users_session_is_not_reused(
+    client, llm_calls, sessions, signed_in, monkeypatch
+):
+    """**남의 세션 id 를 보내도 이어 쓰지 못한다.** 스냅샷은 같은데 주인이 다르다.
+
+    막히는 대신 새 세션이 생긴다 — 요청을 거절하지 않는 이유는 이 값이 거들 뿐이고
+    분석이 그것 때문에 실패하면 안 되기 때문이다(`_is_uuid` 와 같은 방침).
+    """
+    monkeypatch.setattr(summary_cache, "get", lambda access: dict(SNAPSHOT))
+    sessions.existing[EXISTING] = {"id": EXISTING, "snapshot_id": 42, "user_id": 99}
+    client.cookies.set(login_session.COOKIE_NAME, "cookie-7")
+
+    res = _analyze(client, EXISTING)
+
+    assert res.json()["session_id"] == "session-for-42"
+    assert sessions.owners == [7]
+
+
+def test_an_anonymous_session_is_not_adopted_on_login(
+    client, llm_calls, sessions, signed_in, monkeypatch
+):
+    """**로그인해도 옛 익명 대화를 자기 것으로 가져오지 않는다.**
+
+    가져오게 하면 세션 id 를 아는 누구나 남의 대화를 자기 계정에 붙일 수 있다.
+    위 테스트와 짝이다 — 그쪽은 '남의 것', 이쪽은 '주인 없는 것' 이고 **둘 다 막힌다.**
+    """
+    monkeypatch.setattr(summary_cache, "get", lambda access: dict(SNAPSHOT))
+    sessions.existing[EXISTING] = {"id": EXISTING, "snapshot_id": 42, "user_id": None}
+    client.cookies.set(login_session.COOKIE_NAME, "cookie-7")
+
+    res = _analyze(client, EXISTING)
+
+    assert res.json()["session_id"] == "session-for-42"

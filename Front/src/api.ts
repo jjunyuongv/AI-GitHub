@@ -1,6 +1,12 @@
 /** 백엔드 호출에 공통으로 쓰는 값. App 과 Chat 이 서로를 import 하지 않도록 여기에 둔다. */
 
-export const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
+/** **빈 문자열 = 같은 출처**다. 개발은 Vite proxy 가, 배포는 nginx 가 백엔드로 넘긴다.
+ *
+ * 전에는 `http://127.0.0.1:8000` 이 기본값이라 개발에서 API 호출이 **교차 출처**로
+ * 나갔다. 그러면 HttpOnly + SameSite=Lax 인 로그인 쿠키가 실리지 않아, 로그인해도
+ * `/chat` 이 익명 요청으로 도착한다 — 오류 없이 소유자 검사만 조용히 빗나간다.
+ */
+export const API_BASE = import.meta.env.VITE_API_BASE ?? "";
 
 /** 답변이 짚은 근거 한 건.
  *

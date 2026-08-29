@@ -11,6 +11,7 @@ import logging
 
 from app.config import CHUNK_TABLE
 from app.db import chunks as chunk_store
+from app.db import users
 from app.db.index_status import CHUNK_TABLES as ALL_CHUNK_TABLES
 from app.db.pool import cursor
 
@@ -64,7 +65,14 @@ def survey() -> dict:
         )
         report["empty_sessions"] = cur.fetchone()["n"]
 
-        # 4. 아무 대화도 참조하지 않고, 그 저장소의 최신도 아닌 스냅샷.
+        # 4. 만료된 로그인. **읽는 쪽이 이미 거르므로 남아 있어도 틀리지 않는다**
+        #    (users.get_login 이 expires_at 을 SQL 로 본다). 여기 있는 것은 순전히
+        #    쌓이지 않게 하려는 것이라, 다른 항목들과 달리 "안 지우면 조용히 틀린다"
+        #    는 성격이 아니다.
+        cur.execute("SELECT count(*) AS n FROM logins WHERE expires_at <= now()")
+        report["expired_logins"] = cur.fetchone()["n"]
+
+        # 5. 아무 대화도 참조하지 않고, 그 저장소의 최신도 아닌 스냅샷.
         #    최신을 남기는 이유: 다음 분석이 그것을 캐시로 쓴다(요약 재사용).
         cur.execute(_ORPHAN_SNAPSHOT_SQL.format(select="count(*) AS n"))
         report["orphan_snapshots"] = cur.fetchone()["n"]
@@ -101,6 +109,10 @@ def run(apply: bool = False) -> dict:
     deleted["unused_table_chunks"] = {
         table: chunk_store.delete_unused_table(table) for table in _unused_tables()
     }
+
+    # 만료된 로그인. **살아 있는 로그인은 건드리지 않는다** — 여기서 조건을 넓히면
+    # 정리가 돌 때마다 모두가 로그아웃된다(tests/test_db_users.py 가 양쪽을 고정한다).
+    deleted["expired_logins"] = users.delete_expired()
 
     with cursor() as cur:
         cur.execute(

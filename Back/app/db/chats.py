@@ -3,12 +3,18 @@
 from app.db.pool import cursor
 
 
-def create_session(snapshot_id: int) -> str:
-    """대화를 시작한다. 이 세션은 끝까지 이 스냅샷(=이 시점의 코드)만 본다."""
+def create_session(snapshot_id: int, user_id: int | None = None) -> str:
+    """대화를 시작한다. 이 세션은 끝까지 이 스냅샷(=이 시점의 코드)만 본다.
+
+    `user_id` 가 None 이면 **익명 대화**다. 로그인이 꺼져 있거나 로그인하지 않은
+    방문자가 여기 해당하고, 그 동작은 로그인 도입 전과 같다 — 세션 id 를 가진
+    사람이 곧 주인이다.
+    """
     with cursor() as cur:
         cur.execute(
-            "INSERT INTO chat_sessions (snapshot_id) VALUES (%s) RETURNING id",
-            (snapshot_id,),
+            "INSERT INTO chat_sessions (snapshot_id, user_id) VALUES (%s, %s)"
+            " RETURNING id",
+            (snapshot_id, user_id),
         )
         return str(cur.fetchone()["id"])
 
@@ -23,7 +29,7 @@ def get_session(session_id: str) -> dict | None:
     with cursor(commit=False) as cur:
         cur.execute(
             """
-            SELECT c.id, c.created_at, c.last_message_at,
+            SELECT c.id, c.created_at, c.last_message_at, c.user_id,
                    s.id AS snapshot_id, s.context, s.summary, s.model,
                    s.source_bundle,
                    r.owner, r.name,

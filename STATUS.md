@@ -57,10 +57,19 @@
 | `IP_RATE_WINDOW_SECONDS` | `'3600'` | `app.config` | `IP_RATE_WINDOW_SECONDS` |
 | `TRUST_PROXY_HEADERS` | `'0'` | `app.config` | `TRUST_PROXY_HEADERS` |
 | `ALLOWED_REPOS` | `''` | `app.config` | `ALLOWED_REPOS` |
+| `GITHUB_OAUTH_CLIENT_ID` | `''` | `app.config` | `GITHUB_OAUTH_CLIENT_ID` |
+| `GITHUB_OAUTH_CLIENT_SECRET` | `''` | `app.config` | `GITHUB_OAUTH_CLIENT_SECRET` |
+| `LOGIN_SESSION_DAYS` | `'14'` | `app.config` | `LOGIN_SESSION_DAYS` |
+| `USER_DAILY_LIMIT` | `'100'` | `app.config` | `USER_DAILY_LIMIT` |
+| `COOKIE_SECURE` | `''` | `app.config` | `COOKIE_SECURE` |
 
 기본값이 표현식인 것의 실제 크기 — `MAX_ARCHIVE_BYTES` 500MB ·
 `MAX_SOURCE_FILE_BYTES` 200KB · `FULL_INJECTION_MAX_SOURCE_BYTES` 500KB ·
 `MAX_STORED_SOURCE_BYTES` 20MB.
+**`GITHUB_OAUTH_CLIENT_ID` 가 비면 로그인이 통째로 꺼진다** — `ALLOWED_REPOS` 가
+비면 허용 목록이 꺼지는 것과 같은 관용구다. **지금 배포가 그 상태다**(§2.1).
+`COOKIE_SECURE` 도 비면 `FRONTEND_ORIGIN` 이 https 인지로 유도된다.
+
 `EMBEDDING_SOURCE_REPO` 는 비면 `EMBEDDING_MODEL` 로 폴백하고,
 `EMBEDDING_CACHE_DIR` 은 `Back/cache/models` 로 계산된다.
 
@@ -238,7 +247,7 @@ LLM 을 다시 부를 필요가 없다.
 
 ## 2. 현재 시스템 상태 — 사람이 갱신
 
-**최종 확인: 57733af (2026-08-28)**
+**최종 확인: 6f29059 (2026-08-29)**
 
 이 구역은 자동으로 맞는지 잴 수 없다. 각 항목에 그것이 사는 코드 위치를 적어 두었고,
 `Back/tests/test_status_doc.py` 는 **그 경로가 실재하는지만** 검사한다. 내용이 맞는지는
@@ -256,8 +265,25 @@ LLM 을 다시 부를 필요가 없다.
 - **DB 는 선택이다.** `DATABASE_URL` 이 비면 요약 캐시가 꺼지고(매번 LLM 호출)
   `/chat` 이 503 이 된다. 그 외는 그대로 돈다 — 실행 기록과 남용 카운터는 파일로
   폴백한다(`Back/app/services/run_log.py`, `Back/app/services/rate_limit.py`).
-- **남용 방지는 서비스 전체 합산이다.** 로그인이 없어 사용자별로 나눌 수 없다.
-  캐시 히트에는 걸지 않는다 — LLM 비용이 없는 요청을 막을 이유가 없다.
+- **남용 방지는 세 층이다.** 일일 상한(`DAILY_*`)은 **서비스 전체 합산으로 남는다** —
+  그건 공평성 장치가 아니라 **비용 천장**이라 사용자 수와 무관해야 한다. 그 아래에
+  IP 별 짧은 구간 제한이 있고, 로그인한 요청에는 사용자별 카운터(`USER_DAILY_LIMIT`)가
+  **하나 더** 붙는다. **익명 요청의 동작은 로그인 도입 전과 같다** — 사용자 층을 아예
+  지나지 않고 `rate_limit_user_daily` 에 행도 안 생긴다
+  (`Back/tests/test_db_rate_limits.py` 가 행 수로 고정한다).
+  캐시 히트에는 어느 층도 걸지 않는다 — LLM 비용이 없는 요청을 막을 이유가 없다.
+- **로그인은 배포에서 꺼져 있다. 꺼짐이 기본이다.**
+  `GITHUB_OAUTH_CLIENT_ID` 가 비면 `/auth/*` 가 404 이고 쿠키를 아예 보지 않아,
+  **동작이 로그인 도입 전과 같다**(`Back/tests/test_auth_api.py` 가 그것만 따로 고정한다).
+  못 켜는 이유는 콜백 URL 이다 — OAuth App 은 콜백의 host·port 가 정확히 일치해야
+  하는데 인스턴스를 껐다 켤 때마다 퍼블릭 IP 가 바뀐다. **도메인이 생긴 뒤에 켠다**
+  (`docs/log/09-deploy.md` 재기동 절차). 로컬 개발에서는 켜고 쓴다.
+- **로그인은 신원 확인만 한다. GitHub 토큰을 저장하지 않는다.**
+  scope 를 아예 요청하지 않고, 받은 액세스 토큰은 `GET /user` 한 번에 쓰고 버린다
+  (`Back/app/services/oauth.py`). 저장소는 지금까지처럼 서버의 `GITHUB_TOKEN` 으로
+  읽는다 — **배경 색인이 요청이 끝난 뒤에 GitHub 을 다시 부르므로**, 사용자 토큰으로
+  읽으려면 보관 말고는 길이 없고 그러면 비밀값이 둘 늘고 private 코드가
+  `snapshot_source_files` 에 쌓이기 시작한다. 그래서 **private 저장소는 지원하지 않는다.**
 - **DB 장애 시 남용 제한은 통과시킨다.** 상한은 비용을 지키는 장치이지 관문이 아니다
   (`Back/app/services/rate_limit.py`).
 - **프록시 뒤에서는 `TRUST_PROXY_HEADERS=1` 과 nginx 의 `X-Forwarded-For $remote_addr`
@@ -328,6 +354,18 @@ LLM 을 다시 부를 필요가 없다.
 
 ### 2.4 대화가 답하는 방식
 
+- **대화에 소유자가 있다. 인가는 `_load_session()` 한 곳뿐이다.**
+  `/chat` 의 네 경로(질문·이력·파일·색인 상태)가 전부 그것을 거친다
+  (`Back/app/api/chat.py`). 규칙은 둘이다 — `chat_sessions.user_id` 가 **NULL 이면
+  누구나** 볼 수 있고(익명 대화. 로그인 도입 전과 같다), 값이 있으면 **그 사람만**
+  볼 수 있다(다른 사용자도 익명도 404). **403 이 아니라 404 다** — 없는 것과 남의
+  것을 구분해 줄 이유가 없다.
+  `/analyze` 도 같은 규칙으로 세션 재사용을 가른다(`_start_session`) — 그 자리는
+  **클라이언트가 보낸 session_id** 를 받으므로, 스냅샷만 보면 남의 대화를 이어 쓸 수 있다.
+- **로그인해도 옛 익명 대화를 가져오지 않는다.** "내 것으로 가져오기"는 세션 id 를
+  아는 누구나 남의 대화를 자기 계정에 붙일 수 있는 **가로채기 경로**다. 새 대화가
+  하나 생길 뿐이고 옛 익명 대화는 그대로 남는다. 소유자가 붙는 것은 새로 만들어지는
+  대화부터다.
 - **인용 파서는 하나뿐이다** — `Back/app/services/citations.py`. `/chat` 이 화면 링크를
   만들 때와 `tests/test_line_accuracy.py` 가 행 번호 정확도를 채점할 때 **같은 함수**를
   쓴다. 파서가 둘이 되면 "채점하는 인용"과 "링크로 뜨는 인용"이 다른 집합이 되고 한쪽만

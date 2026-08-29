@@ -263,3 +263,17 @@ def test_unwritable_state_does_not_raise(monkeypatch):
     monkeypatch.setattr(rate_limit.Path, "write_text", boom)
 
     rate_limit.check_and_reserve(IP)
+
+
+def test_the_file_path_ignores_the_user_layer():
+    """**파일 폴백에는 사용자 층이 없다.** 그리고 없는 것이 맞다.
+
+    로그인은 DB 가 있어야 성립하므로(`logins` 표가 거기 있다) 이 경로에 로그인한
+    요청이 도달할 수 없다. 여기서 고정하는 것은 "user_id 를 줘도 동작이 안 바뀐다" 다 —
+    쓰지 않는 분기를 나중에 누가 채워 넣으면 두 경로의 상한이 갈린다.
+    """
+    for _ in range(3):
+        rate_limit.check_and_reserve(IP, 7)
+
+    with pytest.raises(RateLimitExceeded):
+        rate_limit.check_and_reserve(IP, 7)

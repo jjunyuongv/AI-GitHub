@@ -10,6 +10,7 @@ import threading
 import pytest
 
 from app.db import rate_limits as store
+from app.db import users
 
 pytestmark = pytest.mark.usefixtures("db")
 
@@ -151,3 +152,73 @@ def test_usage_prunes_hits_outside_the_window():
     assert store.usage(DAY, 3600)["tracked_ips"] == 1
     # 윈도우를 0 으로 보면 방금 넣은 것도 밖이다.
     assert store.usage(DAY, 0)["tracked_ips"] == 0
+
+
+# ── 사용자 층 ──────────────────────────────────────────────────
+#
+# 서비스 전체 상한 **아래에** 한 층 더 있는 것이다. 위쪽은 비용 천장이라 사용자 수와
+# 무관해야 하고, 이쪽은 한 사람이 그 천장을 혼자 다 쓰는 것을 막는다.
+
+
+def _user() -> int:
+    return users.upsert(4242, "octocat", None)
+
+
+def test_an_anonymous_request_never_touches_the_user_layer():
+    """**익명 요청의 동작이 로그인 도입 전과 같다는 것을 값으로 고정한다.**
+
+    통과하는지만 보면 부족하다 — 사용자 상한을 익명에도 적용하는 변이는 `user_id`
+    가 None 이라 어차피 못 세고 통과할 수 있다. **행이 하나도 안 생기는지**까지 본다.
+    """
+    for _ in range(3):
+        assert reserve(ip_limit=0, user_limit=1) is None
+
+    with store.cursor() as cur:
+        cur.execute("SELECT count(*) AS n FROM rate_limit_user_daily")
+        assert cur.fetchone()["n"] == 0
+
+
+def test_the_user_limit_blocks_that_user():
+    user_id = _user()
+
+    for _ in range(2):
+        assert reserve(ip_limit=0, user_id=user_id, user_limit=2) is None
+    rejected = reserve(ip_limit=0, user_id=user_id, user_limit=2)
+
+    assert rejected is not None
+    assert "오늘" in rejected["reason"]
+
+
+def test_one_user_hitting_the_limit_does_not_block_another():
+    """**공평성 장치라는 것이 이 테스트다.** 한 사람이 막혀도 다른 사람은 계속 쓴다.
+
+    이게 없으면 사용자 카운터를 서비스 전체 카운터에 합치는 변이가 통과한다.
+    """
+    blocked, other = _user(), users.upsert(99, "someone", None)
+
+    for _ in range(2):
+        reserve(ip_limit=0, user_id=blocked, user_limit=2)
+    assert reserve(ip_limit=0, user_id=blocked, user_limit=2) is not None
+
+    assert reserve(ip_limit=0, user_id=other, user_limit=2) is None
+
+
+def test_a_zero_user_limit_disables_the_layer():
+    """다른 상한들과 같은 관용구 — 0 이면 그 검사를 건너뛴다."""
+    user_id = _user()
+
+    for _ in range(5):
+        assert reserve(ip_limit=0, user_id=user_id, user_limit=0) is None
+
+
+def test_the_service_limit_still_wins_over_a_generous_user_limit():
+    """**서비스 상한이 위에 있다.** 사용자 상한이 아무리 넉넉해도 천장은 천장이다.
+
+    순서를 뒤집으면(사용자 층을 먼저 세면) 서비스가 이미 천장에 닿았는데 사용자
+    카운터만 올라간다.
+    """
+    user_id = _user()
+
+    for _ in range(5):
+        assert reserve(ip_limit=0, user_id=user_id, user_limit=1000) is None
+    assert reserve(ip_limit=0, user_id=user_id, user_limit=1000) is not None

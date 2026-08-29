@@ -12,6 +12,7 @@ from app.schemas.schemas import AnalyzeRequest, AnalyzeResponse
 from app.services import (
     allowlist,
     indexer,
+    login_session,
     rate_limit,
     run_log,
     static_analysis,
@@ -96,11 +97,25 @@ def _is_uuid(value: str | None) -> bool:
         return False
 
 
-def _start_session(snapshot: dict | None, existing: str | None = None) -> str | None:
+def _start_session(
+    snapshot: dict | None, existing: str | None = None, user_id: int | None = None
+) -> str | None:
     """후속 질문용 대화 세션. 이어 쓸 수 있으면 재사용하고, 아니면 만든다. 실패하면 None.
 
-    **재사용 조건은 '같은 스냅샷을 보고 있는가' 하나다.** 스냅샷이 다르면 그 세션은
-    옛 코드를 보고 있으므로 이어 쓰면 안 된다 (세션이 보는 코드 버전은 스냅샷으로 확정된다).
+    **재사용 조건은 둘이다 — 같은 스냅샷인가, 그리고 같은 주인인가.** 스냅샷이 다르면
+    그 세션은 옛 코드를 보고 있으므로 이어 쓰면 안 된다 (세션이 보는 코드 버전은
+    스냅샷으로 확정된다).
+
+    ## 주인 조건이 왜 필요한가
+
+    `existing` 은 **클라이언트가 보낸 값**이다(브라우저의 localStorage 에서 온다).
+    스냅샷만 보고 재사용하면, 남의 세션 id 를 적어 보내는 것만으로 그 대화를 이어
+    쓸 수 있다 — 이력이 프롬프트에 실리고 답변이 그 위에 쌓인다.
+
+    **익명 세션을 로그인한 사람이 이어 쓰지도 못한다**(None ≠ user_id). 그건 결함이
+    아니라 의도다 — "로그인하면 내 것으로 가져오기"는 세션 id 를 아는 누구나 남의
+    대화를 자기 계정에 붙일 수 있는 가로채기 경로다. 새 대화가 하나 생길 뿐이고,
+    옛 익명 대화는 그대로 남는다.
 
     이 인자가 생기기 전에는 분석할 때마다 새 세션을 만들었고, 프론트가 localStorage 의
     옛 세션을 복원하면 방금 만든 세션은 **메시지 없이 버려졌다.** 서버는 복원 가능
@@ -114,9 +129,13 @@ def _start_session(snapshot: dict | None, existing: str | None = None) -> str | 
     try:
         if _is_uuid(existing):
             session = chats.get_session(existing)
-            if session and session["snapshot_id"] == snapshot["id"]:
+            if (
+                session
+                and session["snapshot_id"] == snapshot["id"]
+                and session["user_id"] == user_id
+            ):
                 return str(session["id"])
-        return chats.create_session(snapshot["id"])
+        return chats.create_session(snapshot["id"], user_id)
     except DB_ERRORS as e:
         logger.warning("대화 세션을 만들지 못했습니다 (스냅샷 %s): %s", snapshot["id"], e)
         return None
@@ -124,6 +143,9 @@ def _start_session(snapshot: dict | None, existing: str | None = None) -> str | 
 
 @router.post("/analyze", response_model=AnalyzeResponse)
 def analyze(req: AnalyzeRequest, request: Request):
+    # 이 요청의 사용자. 로그인이 꺼져 있으면 언제나 None 이고, 그때 아래 흐름은
+    # 로그인 도입 전과 글자 그대로 같다.
+    user_id = login_session.current_user_id(request)
     try:
         owner, repo = parse_github_url(req.github_url)
     except ValueError as e:
@@ -162,11 +184,11 @@ def analyze(req: AnalyzeRequest, request: Request):
                 repo=repo_meta(access),
                 summary=cached["summary"],
                 # 히트한 스냅샷을 그대로 쓰므로 추가 LLM·GitHub 호출은 없다.
-                session_id=_start_session(cached, req.session_id),
+                session_id=_start_session(cached, req.session_id, user_id),
             )
 
         # 캐시 미스부터 LLM 비용이 든다. 남용 제한은 여기서만 건다.
-        rate_limit.check_and_reserve(rate_limit.client_ip(request))
+        rate_limit.check_and_reserve(rate_limit.client_ip(request), user_id)
 
         ctx = fetch_repo_context(owner, repo, access=access)
     except rate_limit.RateLimitExceeded as e:
@@ -216,5 +238,5 @@ def analyze(req: AnalyzeRequest, request: Request):
     return AnalyzeResponse(
         repo=ctx["meta"],
         summary=result["text"],
-        session_id=_start_session(snapshot, req.session_id),
+        session_id=_start_session(snapshot, req.session_id, user_id),
     )

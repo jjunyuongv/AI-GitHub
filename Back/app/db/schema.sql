@@ -103,7 +103,9 @@ ALTER TABLE runs ADD COLUMN IF NOT EXISTS round_trips INT;
 -- 그것이 비어 있는 것이 곧 증상이라, 원문으로는 아무것도 되살릴 수 없다.
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS stop_reason TEXT;
 
--- 하루치 서비스 전체 카운터. 로그인이 없어 사용자별이 아니라 합산이다.
+-- 하루치 서비스 전체 카운터. **로그인이 생겨도 합산으로 남는다** — 이것은
+-- 공평성 장치가 아니라 비용 천장이라 사용자 수와 무관해야 한다.
+-- 사용자별 층은 아래 rate_limit_user_daily 가 따로 맡는다.
 -- day 는 앱이 넘긴 로컬 날짜다 — CURRENT_DATE(서버 타임존)를 쓰면 집계와 경계가 어긋난다.
 CREATE TABLE IF NOT EXISTS rate_limit_daily (
   day    DATE PRIMARY KEY,
@@ -424,4 +426,63 @@ CREATE TABLE IF NOT EXISTS snapshot_source_files (
   path        TEXT NOT NULL,
   content     TEXT NOT NULL,
   PRIMARY KEY (snapshot_id, path)
+);
+
+-- ── 로그인 (GitHub OAuth) ───────────────────────────────────────────────────
+-- **꺼짐이 기본이다.** GITHUB_OAUTH_CLIENT_ID 가 비면 /auth/* 가 404 이고 아래 표는
+-- 비어 있는 채로 남는다. 스키마는 미리 만들어 둔다 — 켜고 끄는 것이 배포 설정 하나여야
+-- 하고, 스키마 적용까지 따라오면 "꺼짐"이 되돌리기 쉬운 상태가 아니게 된다.
+
+-- 로그인한 사용자. **github_user_id 가 불변 키다** — login(계정 이름)은 사용자가
+-- 언제든 바꿀 수 있어서 그것을 키로 삼으면 개명 한 번에 남남이 된다.
+-- login·avatar_url 은 표시용이라 로그인할 때마다 최신값으로 덮는다.
+CREATE TABLE IF NOT EXISTS users (
+  id             BIGSERIAL PRIMARY KEY,
+  github_user_id BIGINT NOT NULL UNIQUE,
+  login          TEXT NOT NULL,
+  avatar_url     TEXT,
+  first_seen_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_seen_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- 로그인 세션. **chat_sessions 와 다른 것이다.**
+--
+-- 이름을 sessions 로 두지 않은 이유가 그것이다 — 이 저장소에서 "세션"은 이미 대화
+-- 한 건(chat_sessions)을 뜻한다. 같은 낱말이 두 개념이 되면 주석과 대화 양쪽에서
+-- 매번 어느 쪽인지 되물어야 한다.
+--
+-- 만료를 행에 둔다(쿠키 Max-Age 만 믿지 않는다). 쿠키는 클라이언트가 들고 있는 값이라
+-- 만료를 지우고 보낼 수 있다. 서버가 판정할 근거가 여기 있어야 한다.
+CREATE TABLE IF NOT EXISTS logins (
+  id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id    BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS logins_user_idx ON logins (user_id);
+
+-- 대화의 소유자. **NULL 을 허용한다.**
+--
+-- NULL 은 "익명 대화"다. 로그인 도입 전에 만들어진 대화가 전부 여기 해당하고,
+-- 로그인하지 않은 방문자가 지금도 계속 만든다. **NULL 인 대화의 동작은 로그인 도입
+-- 전과 완전히 같다** — 세션 id 를 가진 사람이 곧 주인이다.
+--
+-- **로그인해도 옛 익명 대화를 자기 것으로 가져오지 않는다.** "내 것으로 가져오기"는
+-- 세션 id 를 아는 누구나 남의 대화를 자기 계정에 붙일 수 있는 가로채기 경로다.
+ALTER TABLE chat_sessions
+  ADD COLUMN IF NOT EXISTS user_id BIGINT REFERENCES users(id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS chat_sessions_user_idx ON chat_sessions (user_id);
+
+-- 사용자별 하루 카운터. **rate_limit_daily 를 대체하지 않고 그 아래 한 층 더 놓는다.**
+--
+-- 위의 rate_limit_daily(서비스 전체)는 **비용 천장**이라 사용자 수와 무관해야 한다.
+-- 이 표는 공평성 장치다 — 한 사람이 그 천장을 혼자 다 쓰는 것을 막는다.
+-- 익명 요청은 여기 한 행도 만들지 않는다(그쪽은 IP 층이 맡는다).
+CREATE TABLE IF NOT EXISTS rate_limit_user_daily (
+  day     DATE NOT NULL,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  calls   INT NOT NULL DEFAULT 0,
+  PRIMARY KEY (day, user_id)
 );

@@ -108,7 +108,8 @@ FULL_INJECTION_MAX_SOURCE_BYTES = int(
 )
 
 # 남용 방지 상한. 어느 값이든 0이면 그 제한을 끈다.
-# 로그인이 없어 누구나 호출할 수 있으므로 서비스 전체(=모든 사용자 합산) 기준이다.
+# **서비스 전체(=모든 사용자 합산) 기준이고 로그인이 생겨도 그대로다** — 이것은
+# 비용 천장이라 사용자 수와 무관해야 한다. 사용자별 층은 USER_DAILY_LIMIT 이다.
 # 실사용 데이터가 없어 넉넉하게 시작하고 .env에서 조인다.
 DAILY_LLM_CALL_LIMIT = int(os.environ.get("DAILY_LLM_CALL_LIMIT", "500"))
 DAILY_TOKEN_LIMIT = int(os.environ.get("DAILY_TOKEN_LIMIT", "5000000"))
@@ -122,9 +123,10 @@ TRUST_PROXY_HEADERS = os.environ.get("TRUST_PROXY_HEADERS", "0") == "1"
 # 분석을 허용할 저장소 목록. `owner/name` 을 쉼표로 잇는다. **비어 있으면 제한을 끈다**
 # (위의 상한들이 0으로 꺼지는 것과 같은 관용구다).
 #
-# 로그인이 없는 채로 공개 배포하므로, 켜지 않으면 URL 을 아는 누구나 LLM 비용과
-# 색인 CPU 를 쓴다. 켜는 곳은 배포의 --env-file 하나뿐이고, 로컬 개발은 이 값을
-# 비워 두어 임의 저장소를 그대로 넣는다.
+# 공개 배포에서 켜지 않으면 URL 을 아는 누구나 LLM 비용과 색인 CPU 를 쓴다.
+# **로그인을 켜도 이 값은 따로 필요하다** — 로그인은 누가 썼는지를 알려줄 뿐이다.
+# 켜는 곳은 배포의 --env-file 하나뿐이고, 로컬 개발은 이 값을 비워 두어 임의 저장소를
+# 그대로 넣는다.
 #
 # **문자열 그대로 둔다. 여기서 파싱하지 않는다.** 두 가지 이유다 —
 # tests/test_status_doc.py 가 이 파일을 **AST 로** 읽어 os.environ.get 의 기본값을
@@ -132,3 +134,39 @@ TRUST_PROXY_HEADERS = os.environ.get("TRUST_PROXY_HEADERS", "0") == "1"
 # 그리고 목록 해석(공백·대소문자·빈 항목)은 비즈니스 규칙이라 services/ 의 몫이다.
 # 파싱과 판정은 app/services/allowlist.py 에 있다.
 ALLOWED_REPOS = os.environ.get("ALLOWED_REPOS", "")
+
+# ── 로그인 (GitHub OAuth) ────────────────────────────────────────────────────
+#
+# **비면 로그인 기능이 통째로 꺼진다.** `ALLOWED_REPOS` 가 비면 허용 목록이 꺼지고
+# `DAILY_*` 가 0 이면 상한이 꺼지는 것과 같은 관용구다. 꺼진 상태의 동작은 로그인
+# 도입 전과 **완전히 같아야 하고**, 그것을 `tests/test_auth_api.py` 가 고정한다.
+#
+# 배포는 지금 이 값을 비워 둔다 — OAuth App 의 콜백 URL 은 호스트가 정확히 일치해야
+# 하는데 인스턴스를 껐다 켤 때마다 퍼블릭 IP 가 바뀐다(docs/log/09-deploy.md 재기동
+# 절차 1번). 도메인이 생긴 뒤에 켠다.
+GITHUB_OAUTH_CLIENT_ID = os.environ.get("GITHUB_OAUTH_CLIENT_ID", "")
+GITHUB_OAUTH_CLIENT_SECRET = os.environ.get("GITHUB_OAUTH_CLIENT_SECRET", "")
+
+# 로그인 쿠키의 수명(일). 만료는 쿠키가 아니라 `logins.expires_at` 이 판정한다 —
+# 쿠키의 Max-Age 는 클라이언트가 들고 있는 값이라 지우고 보낼 수 있다.
+LOGIN_SESSION_DAYS = int(os.environ.get("LOGIN_SESSION_DAYS", "14"))
+
+# 로그인한 사용자 한 명의 하루 질문 수 상한. 0이면 이 층을 끈다.
+#
+# **`DAILY_LLM_CALL_LIMIT`(서비스 전체)을 대체하지 않는다.** 그쪽은 비용 천장이고
+# 이쪽은 공평성 장치다 — 한 사람이 천장을 혼자 다 쓰는 것을 막는다. 그래서 값도
+# 그쪽에서 역산한다: 서비스 상한 500 을 **최소 5명이 나눠 쓸 수 있어야 한다**로 잡아 100.
+# 실사용은 하루 최대 8건이라(STATUS §5.1) 여기 닿는 사람은 아직 없다.
+USER_DAILY_LIMIT = int(os.environ.get("USER_DAILY_LIMIT", "100"))
+
+# 로그인 쿠키에 `Secure` 를 붙일지. **비우면 `FRONTEND_ORIGIN` 이 https 인지로 정한다.**
+#
+# 고정 기본값을 두지 않는 이유: `0` 이 기본이면 배포에서 켜는 것을 잊어 평문으로 나가고,
+# `1` 이 기본이면 로컬(http)에서 쿠키가 아예 안 실려 로그인이 안 되는데 **아무 오류도
+# 안 난다**(브라우저가 조용히 버린다). 출처에서 유도하면 둘 다 자동으로 맞고,
+# 명시적으로 덮고 싶으면 `0`/`1` 을 적는다. (`EMBEDDING_SOURCE_REPO` 가 비면
+# `EMBEDDING_MODEL` 로 폴백하는 것과 같은 관용구다)
+COOKIE_SECURE = (
+    os.environ.get("COOKIE_SECURE", "")
+    or ("1" if FRONTEND_ORIGIN.startswith("https://") else "0")
+) == "1"

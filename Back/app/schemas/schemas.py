@@ -116,6 +116,23 @@ class FileView(BaseModel):
     numbered: str
 
 
+class AuthUser(BaseModel):
+    login: str
+    avatar_url: str | None
+
+
+class AuthStatus(BaseModel):
+    """지금 요청이 누구인가 + 로그인 기능이 켜져 있는가.
+
+    **`enabled` 를 함께 준다.** 화면은 이 값으로 로그인 버튼을 그릴지 정한다 —
+    꺼져 있을 때 404 를 보고 판단하게 하면 콘솔에 오류가 남고, 그건 배포에서
+    로그인을 끄고 돌리는 상태(지금)를 "고장 난 것"처럼 보이게 만든다.
+    """
+
+    enabled: bool
+    user: AuthUser | None = None
+
+
 class RunRequest(BaseModel):
     github_url: str
     model: str

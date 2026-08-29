@@ -1,6 +1,12 @@
-"""남용 방지. 서비스 전체의 하루 상한 + IP별 짧은 구간 제한.
+"""남용 방지. 세 층이다 — 서비스 전체 하루 상한 · IP별 짧은 구간 제한 · 사용자별 하루 상한.
 
-로그인이 없어 누구나 호출할 수 있으므로 일일 상한은 사용자별이 아니라 서비스 전체 합산이다.
+**서비스 전체 상한은 로그인이 생겨도 합산으로 남는다.** 그것은 공평성 장치가 아니라
+**비용 천장**이라 사용자 수와 무관해야 한다. 사용자별 층(`USER_DAILY_LIMIT`)은 그 아래
+따로 놓여, 한 사람이 천장을 혼자 다 쓰는 것을 막는다.
+
+**익명 요청은 사용자 층을 지나지 않는다**(`user_id` 가 None). 그래서 로그인이 꺼져
+있거나 로그인하지 않은 방문자의 동작은 로그인 도입 전과 **완전히 같다** —
+`tests/test_rate_limit.py` 와 `tests/test_db_rate_limits.py` 가 그것을 고정한다.
 
 **캐시 히트에는 두 제한 모두 걸지 않는다.** LLM 비용이 들지 않는 요청까지 막을 이유가 없어서
 호출부가 캐시를 조회한 뒤, 미스일 때만 check_and_reserve()를 부른다.
@@ -31,6 +37,7 @@ from app.config import (
     IP_RATE_LIMIT,
     IP_RATE_WINDOW_SECONDS,
     TRUST_PROXY_HEADERS,
+    USER_DAILY_LIMIT,
 )
 from app.db import pool
 from app.db import rate_limits as store
@@ -132,17 +139,25 @@ def _normalize(state: dict, now: float) -> dict:
 
 # ── 제한 ────────────────────────────────────────────────────
 
-def check_and_reserve(ip: str) -> None:
+def check_and_reserve(ip: str, user_id: int | None = None) -> None:
     """제한을 검사하고 이번 요청 몫을 카운트에 반영한다.
 
     호출 전에 미리 세어 둬야 동시 요청이 함께 상한을 넘기지 못한다.
     LLM 호출이 실패해도 이 몫은 되돌리지 않는다 (남는 쪽보다 덜 쓰는 쪽이 안전).
+
+    `user_id` 는 로그인한 요청에만 있다. **None 이면 사용자 층을 아예 건너뛴다.**
+
+    **파일 폴백 경로는 `user_id` 를 무시한다.** 로그인은 DB 가 있어야 성립하므로
+    (`logins` 표가 거기 있다) 파일 경로에 로그인한 요청이 도달할 수 없다. 쓰지 않는
+    분기를 만들어 두면 나중에 왜 있는지 모르게 된다.
     """
     if _use_db():
         try:
             rejected = store.reserve(
                 _today(),
                 ip,
+                user_id=user_id,
+                user_limit=USER_DAILY_LIMIT,
                 call_limit=DAILY_LLM_CALL_LIMIT,
                 token_limit=DAILY_TOKEN_LIMIT,
                 ip_limit=IP_RATE_LIMIT,

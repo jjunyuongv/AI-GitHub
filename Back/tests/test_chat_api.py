@@ -12,7 +12,8 @@ from fastapi.testclient import TestClient
 
 from app.api import chat as chat_api
 from app.main import app
-from app.services import rate_limit, run_log
+from app.db import sources as source_store
+from app.services import login_session, oauth, rate_limit, run_log
 
 SESSION_ID = "11111111-2222-3333-4444-555555555555"
 
@@ -30,6 +31,9 @@ SESSION = {
     "display_name": "React",
     "created_at": "2026-08-15T00:00:00+00:00",
     "last_message_at": None,
+    # 익명 대화. **NULL 이 기본이다** — 로그인이 꺼져 있거나 로그인하지 않은 방문자가
+    # 만든 대화이고, 그 동작은 로그인 도입 전과 같다 (아래 '소유자 검사' 절).
+    "user_id": None,
 }
 
 
@@ -473,3 +477,122 @@ def test_index_status_of_unknown_session_is_404(client, fake_chats):
     res = client.get("/chat/99999999-9999-9999-9999-999999999999/index")
 
     assert res.status_code == 404
+
+
+# ── 소유자 검사 ────────────────────────────────────────────────
+#
+# **여기가 로그인의 실체다.** 이 검사가 없으면 로그인은 화면 장식이고, 세션 id 를
+# 가진 사람이 곧 주인인 상태가 그대로 남는다.
+#
+# 네 경로를 **각각** 건다. `_load_session` 한 곳에 모아 두었지만, 한 경로가 그것을
+# 안 거치게 바뀌어도 나머지 셋이 통과하면 못 잡는다.
+
+
+ALL_ROUTES = [
+    ("post", "/chat", {"json": {"session_id": SESSION_ID, "message": "질문"}}),
+    ("get", f"/chat/{SESSION_ID}", {}),
+    ("get", f"/chat/{SESSION_ID}/file", {"params": {"path": "a.java", "start": 1, "end": 2}}),
+    ("get", f"/chat/{SESSION_ID}/index", {}),
+]
+
+
+class FakeLoginUsers:
+    """login_session 이 쿠키를 사용자로 바꾸는 경로의 대역."""
+
+    def __init__(self, mapping):
+        self.mapping = mapping
+
+    def get_login(self, login_id):
+        return self.mapping.get(login_id)
+
+
+@pytest.fixture
+def fake_logins(monkeypatch):
+    """쿠키 값 → 사용자 id 로 바꿔 주는 대역. **켜고 끄는 것과는 별개다.**
+
+    둘을 한 픽스처에 묶었더니 '꺼짐' 테스트에서 대역이 안 깔려, 쿠키를 봐도 못 봐도
+    똑같이 404 가 나왔다 — 그 상태로는 "꺼지면 쿠키를 안 본다"를 지우는 변이가
+    통과한다. 대역 데이터가 두 동작을 갈라야 한다는 규칙(CLAUDE.md §4)에 걸린 자리다.
+    """
+    monkeypatch.setattr(
+        login_session,
+        "users",
+        FakeLoginUsers({
+            "cookie-7": {"id": 7, "login": "seven", "avatar_url": None},
+            "cookie-8": {"id": 8, "login": "eight", "avatar_url": None},
+        }),
+    )
+
+
+@pytest.fixture
+def signed_in(monkeypatch, fake_logins):
+    """로그인 기능이 켜져 있고 쿠키가 사용자로 풀리는 상태."""
+    monkeypatch.setattr(oauth, "GITHUB_OAUTH_CLIENT_ID", "test-client-id")
+
+
+def _call(client, route):
+    method, path, kwargs = route
+    return getattr(client, method)(path, **kwargs)
+
+
+@pytest.mark.parametrize("route", ALL_ROUTES, ids=lambda r: r[1])
+def test_an_anonymous_chat_stays_open_to_everyone(
+    client, fake_chats, captured_call, signed_in, monkeypatch, route,
+):
+    """**익명 대화(user_id NULL)의 동작은 로그인 도입 전과 같다.**
+
+    로그인한 사람이 남의 익명 대화를 열 수 있다는 뜻이기도 한데, 그것이 도입 전의
+    동작이고 여기서 바꾸지 않는다 — 바꾸면 로그인을 켠 순간 **기존 대화가 전부
+    사라진 것처럼 보인다.** 소유자가 붙는 것은 새로 만들어지는 대화부터다.
+    """
+    _fake_status(monkeypatch, None)
+    # 파일 내용은 이 테스트의 관심사가 아니다 — 없으면 404 라 소유자 판정과 섞인다.
+    monkeypatch.setattr(source_store, "get_file", lambda sid, path: "코드 한 줄")
+
+    assert _call(client, route).status_code == 200
+
+    client.cookies.set(login_session.COOKIE_NAME, "cookie-8")
+    assert _call(client, route).status_code == 200
+
+
+@pytest.mark.parametrize("route", ALL_ROUTES, ids=lambda r: r[1])
+def test_only_the_owner_reaches_an_owned_chat(
+    client, fake_chats, captured_call, signed_in, monkeypatch, route,
+):
+    """소유자가 있는 대화는 **그 사람만** 연다. 다른 사용자도 익명도 404 다.
+
+    **양쪽을 다 둔다.** 다른 사용자만 확인하면 "로그인했으면 통과" 로 바꾸는 변이가
+    지나가고, 익명만 확인하면 "로그인 여부만 본다" 는 변이가 지나간다.
+    """
+    fake_chats.session = {**SESSION, "user_id": 7}
+    _fake_status(monkeypatch, None)
+    # 파일 내용은 이 테스트의 관심사가 아니다 — 없으면 404 라 소유자 판정과 섞인다.
+    monkeypatch.setattr(source_store, "get_file", lambda sid, path: "코드 한 줄")
+
+    client.cookies.set(login_session.COOKIE_NAME, "cookie-7")
+    assert _call(client, route).status_code == 200
+
+    client.cookies.set(login_session.COOKIE_NAME, "cookie-8")
+    assert _call(client, route).status_code == 404
+
+    client.cookies.delete(login_session.COOKIE_NAME)
+    assert _call(client, route).status_code == 404
+
+
+def test_the_owner_check_is_off_when_login_is_disabled(
+    client, fake_chats, fake_logins, monkeypatch
+):
+    """**로그인이 꺼져 있으면 쿠키를 아예 보지 않는다.**
+
+    소유자가 붙은 대화가 DB 에 남아 있는 채로 기능을 끄면 그 대화는 아무도 못 연다 —
+    그게 맞다. 여기서 고정하는 것은 "꺼진 상태에서 쿠키가 통하지 않는다" 쪽이다.
+
+    **`fake_logins` 가 반드시 있어야 한다.** 없으면 쿠키를 봤든 안 봤든 사용자를 못
+    찾아 똑같이 404 가 되고, 그러면 이 테스트는 아무것도 재지 않는다. 대역이 깔린
+    지금은 쿠키를 보는 순간 주인이 맞아떨어져 200 이 되므로 판정이 갈린다.
+    """
+    monkeypatch.setattr(oauth, "GITHUB_OAUTH_CLIENT_ID", "")
+    fake_chats.session = {**SESSION, "user_id": 7}
+    client.cookies.set(login_session.COOKIE_NAME, "cookie-7")
+
+    assert client.get(f"/chat/{SESSION_ID}").status_code == 404

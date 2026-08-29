@@ -4,6 +4,7 @@ import pytest
 
 from app.db import index_status
 from app.db import chats
+from app.db import users
 from app.db import repos as repo_db
 from app.db.pool import cursor
 from app.services import cleanup
@@ -155,3 +156,24 @@ def test_the_table_in_use_is_never_emptied(snapshot_id):
 
     with pytest.raises(ValueError):
         chunk_store.delete_unused_table(TABLE)
+
+
+def test_expired_logins_are_cleaned_but_live_ones_stay(snapshot_id):
+    """정리가 **만료된 것만** 지우는지. 양쪽을 한 테스트에 둔다.
+
+    살아 있는 쪽을 안 보면 조건을 넓히는 변이(`DELETE FROM logins`)가 통과하고,
+    그러면 정리가 돌 때마다 모두가 로그아웃된다.
+
+    `users.delete_expired()` 자체는 tests/test_db_users.py 가 따로 본다 —
+    여기서 재는 것은 **정리 경로에 연결돼 있는가** 다.
+    """
+    user_id = users.upsert(4242, "octocat", None)
+    alive = users.create_login(user_id, days=14)
+    users.create_login(user_id, days=-1)
+
+    assert cleanup.survey()["expired_logins"] == 1
+
+    report = cleanup.run(apply=True)
+
+    assert report["deleted"]["expired_logins"] == 1
+    assert users.get_login(alive) is not None

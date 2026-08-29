@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 import ReactMarkdown from "react-markdown";
+import AuthBar from "./Auth";
 import ChatPanel from "./Chat";
 import AnalyzeProgress from "./Progress";
 import { API_BASE, errorMessage, type ChatMessage } from "./api";
@@ -23,7 +24,9 @@ type AnalyzeResponse = {
 /** 화면에 띄울 대화. 복원한 세션일 수도, 방금 만들어진 세션일 수도 있다. */
 type ChatState = { sessionId: string; messages: ChatMessage[] };
 
-// 로그인이 없어 session_id 가 유일한 식별자다. 브라우저에 보관해야 새로고침 후에도 이어갈 수 있다.
+// session_id 를 브라우저에 보관해야 새로고침 후에도 대화를 이어갈 수 있다.
+// **로그인해도 이 자리는 그대로다** — 로그인은 대화에 소유자를 붙일 뿐이고,
+// 어느 대화를 이어갈지는 여전히 브라우저만 아는 정보다(익명 대화도 계속 생긴다).
 const sessionKey = (repo: RepoMeta) =>
   `repodive:session:${repo.owner}/${repo.name}`.toLowerCase();
 
@@ -153,6 +156,7 @@ export default function App() {
 
           {loading ? <AnalyzeProgress /> : urlForm}
           {error && <p className="error">{error}</p>}
+          <AuthBar />
         </div>
       </main>
     );
@@ -167,6 +171,7 @@ export default function App() {
             RepoDive
           </span>
           {urlForm}
+          <AuthBar />
         </div>
       </header>
 

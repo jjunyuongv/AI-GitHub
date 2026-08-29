@@ -19,6 +19,7 @@ RepoDive — GitHub 레포를 읽고 프로젝트/기술스택을 요약하는 �
 | [08-production-baseline.md](docs/log/08-production-baseline.md) | 2026-08-24 ~ | 뽑을 수 있는 표본 세기 · 접두사 2배 정정 · 임계값 재역산 · 등재 위치 |
 | [09-deploy.md](docs/log/09-deploy.md) | 2026-08-25 ~ | 배포 1단계 (백엔드 Dockerfile) · 2단계 (프론트 Nginx · 리버스 프록시) · 3단계 (compose) · 4단계 (라이브 인용 전달) · 5단계 (공개 경로 차단) · 6단계 (데모 저장소 · 미리 색인) |
 | [10-citation-paths.md](docs/log/10-citation-paths.md) | 2026-08-27 ~ | 인용 경로 해석 (조사 · 수정 B·C) · 프롬프트 인용 형식 조사 · 수정 D (접미사 경계) |
+| [11-login.md](docs/log/11-login.md) | 2026-08-28 ~ | GitHub OAuth 로그인 (조사 · 구현) |
 
 04·05 는 Stage 절이 아니다. 그 시기에 **원문이 실제로 쓴 과제 표기**(1번·2번 과제 / 과제 A·B)를
 파일 이름으로 삼았다. 주제로 분류하지 않았다 — 04 에 DB 이전이, 05 에 행 번호 정확도가 들어 있어
