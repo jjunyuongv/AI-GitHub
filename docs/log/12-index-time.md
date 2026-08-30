@@ -317,9 +317,43 @@ air 는 236/300 = **78.7%** 라 **지금은 안 뜨고** 4청크 뒤에 뜬다 �
   `skipped` 가 DB 에 실제로 저장되는지, 활성 포인터가 안 옮겨가는지,
   `start()` 가 재시도를 막는지는 **Postgres 를 띄우고 확인해야 한다**
 
+### 검증 — Docker 를 띄우고 (2026-08-30)
+
+위에서 미룬 DB 통합 테스트 5건을 실제로 돌렸다. **미확인 항목을 닫는다.**
+
+- `pytest -m "not evaluation"` → **559 passed / 0 skipped** (14 deselected)
+- 앞선 420 passed / 139 skipped 와 **합이 같다** — 건너뛰던 139건이 전부 DB 테스트였다
+- 5건을 이름으로 지정해 따로 돌려 **skip 0** 을 확인했다(`-rs` 에 아무 줄도 안 뜬다).
+  `-k` 로 거르면 이름이 겹치는 기존 테스트가 하나 더 붙어 6건이 되므로 이름으로 지정한다
+- 확인된 동작: `skipped` 가 DB 에 저장되고(`chunks_total` 에 실제 청크 수 3,
+  `error` 에 두 숫자), 청크는 0개, `is_ready()` 가 False —
+  **활성 포인터가 안 옮겨갔다는 뜻이다**(`is_ready` → `is_completed` → `active_build_id`).
+  `start()` 는 재시도를 막고 `failed` 는 그대로 재시도된다
+
+### 제약 이름이 맞았다 — 옛 제약이 남은 DB 에서 확인
+
+**새 DB 에서만 되면 배포에서 깨진다.** 그래서 마이그레이션 전 DB 로 확인했다.
+
+`repodive`·`repodive_test` 둘 다 옛 제약을 그대로 갖고 있었고, 이름이
+`index_builds_status_check` 로 schema.sql 이 DROP 하려는 이름과 같았다 —
+인라인 `CHECK` 의 자동 이름이 `<표>_<열>_check` 다.
+
+- 옛 제약 + **실제 데이터 22행**이 있는 `repodive` 에 `init_schema()` 를 돌려
+  `skipped` 가 들어간 제약으로 바뀌는 것을 확인했다. **두 번 돌려도 True** 다
+- `repodive_test` 도 같은 경로를 탔다 — `db` 픽스처가 테스트마다 `init_schema()` 를
+  부르므로 위 559건이 곧 그 확인이다
+- 빈 곳에서 처음 세우는 경로도 확인했다 — 제약 1개, 정의 동일
+
 ### 겪은 것
 
 `caplog` 로 경고를 확인하는 헬퍼를 `r.message % r.args` 로 썼더니 `ValueError` 가 났다.
 `r.message` 는 **이미 펴진 문자열**이라 다시 `%` 를 걸면 본문의 `%`(여기서는 `80%`)를
 형식 문자로 읽는다. `r.getMessage()` 가 답이다. **테스트를 돌렸기 때문에 잡혔다** —
 TROUBLESHOOTING 의 "만든 것은 한 번은 돌릴 것" 이 그대로 맞았다.
+
+빈 DB 로 신규 환경을 확인하려다 `CREATE DATABASE` 가 막혔다 — `template1` 의 collation
+버전이 2.41 인데 OS 가 2.36 을 준다(pgdata 볼륨이 더 새 이미지에서 만들어졌다).
+브랜치와 무관한 환경 문제라 건드리지 않고, 빈 **스키마**를 만들어 `search_path` 로
+그쪽을 보게 해서 같은 경로를 탔다. **테스트에는 영향이 없었다** — `repodive_test` 가
+이미 있어서다. 없었다면 conftest 의 `_ensure_database()` 가 여기서 걸려
+DB 테스트가 전부 skip 된다.
