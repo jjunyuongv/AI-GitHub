@@ -11,6 +11,22 @@ import pytest
 from app.services import indexer, oauth
 
 
+@pytest.fixture(autouse=True)
+def login_off(monkeypatch):
+    """이 파일의 판정은 로그인과 무관하다. 그래서 **끈 상태로 고정한다.**
+
+    지금 `indexer.py` 는 `oauth` 를 아예 안 보므로 고정하지 않아도 결과가 같다.
+    고정하는 것은 **변이를 넣었을 때**를 위해서다 — `_skip_over_cap` 앞에
+    `if oauth.enabled(): return False` 를 심어 보니, 로그인 상태를 안 고정한 아래
+    셋이 `Back/.env` 에 `GITHUB_OAUTH_CLIENT_ID` 가 있는 기계에서만 함께 깨졌다.
+    깨지는 개수가 기계마다 다르면 "테스트가 약한가"를 잘못 판정하게 된다.
+
+    **무관함 자체를 재는 것은 아래 파라미터 테스트다** — 그쪽은 이 기본값을
+    자기 본문에서 덮어 양쪽을 모두 잰다.
+    """
+    monkeypatch.setattr(oauth, "GITHUB_OAUTH_CLIENT_ID", "")
+
+
 @pytest.fixture
 def cap(monkeypatch):
     """상한 10 · 경고 문턱 8(=10×0.8). skip() 은 부른 인자만 받아 둔다."""
