@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 
 from app.api import auth as auth_api
 from app.main import app
-from app.services import login_session, oauth
+from app.services import github_client, login_session, oauth
 
 CLIENT_ID = "test-client-id"
 STATE = "test-state-value"
@@ -92,7 +92,12 @@ def _cookie_attrs(response, name: str) -> str | None:
 
 @pytest.mark.parametrize(
     "method,path",
-    [("get", "/auth/login"), ("get", "/auth/callback"), ("post", "/auth/logout")],
+    [
+        ("get", "/auth/login"),
+        ("get", "/auth/callback"),
+        ("post", "/auth/logout"),
+        ("get", "/auth/repos"),
+    ],
 )
 def test_every_auth_path_is_404_when_disabled(client, off, method, path):
     """**CLIENT_ID 가 비면 그 경로는 존재하지 않는 것으로 다룬다.**
@@ -244,3 +249,73 @@ def test_logout_deletes_the_row_not_just_the_cookie(client, on, users):
 
     assert res.status_code == 303
     assert users.deleted == ["login-id-1"]
+
+
+# ── 내 저장소 목록 ───────────────────────────────────────────
+
+REPO_LIST = {
+    "login": "octocat",
+    "total": 1,
+    "repos": [{
+        "owner": "octocat", "name": "hello", "html_url": "https://github.com/octocat/hello",
+        "description": None, "language": None, "size_kb": 12,
+        "pushed_at": "2026-08-30T00:00:00Z", "stars": 0,
+        "fork": False, "archived": False, "too_large": False,
+    }],
+}
+
+
+@pytest.fixture
+def github_lists(monkeypatch):
+    """GitHub 호출 대역. 어느 login 으로 불렸는지 남긴다."""
+    asked: list[str] = []
+
+    def fake(login):
+        asked.append(login)
+        return REPO_LIST
+
+    monkeypatch.setattr(github_client, "list_public_repos", fake)
+    return asked
+
+
+def test_repos_requires_a_signed_in_user(client, on, users, github_lists):
+    """켜져 있어도 로그인 쿠키가 없으면 401 — GitHub 은 부르지 않는다."""
+    res = client.get("/auth/repos")
+
+    assert res.status_code == 401
+    assert github_lists == []
+
+
+@pytest.mark.parametrize("cookie", ["someone-elses-id", "not-a-uuid"])
+def test_repos_rejects_unknown_or_expired_cookies(client, on, users, github_lists, cookie):
+    client.cookies.set(login_session.COOKIE_NAME, cookie)
+
+    assert client.get("/auth/repos").status_code == 401
+    assert github_lists == []
+
+
+def test_repos_lists_the_signed_in_users_public_repos(client, on, users, github_lists):
+    """**저장된 `users.login` 으로 부른다** — 사용자 토큰은 어디에도 없다."""
+    users.logins["login-id-1"] = {"id": 7, "login": "octocat", "avatar_url": None}
+    client.cookies.set(login_session.COOKIE_NAME, "login-id-1")
+
+    res = client.get("/auth/repos")
+
+    assert res.status_code == 200
+    assert res.json() == REPO_LIST
+    assert github_lists == ["octocat"]
+
+
+def test_repos_passes_github_errors_through(client, on, users, monkeypatch):
+    users.logins["login-id-1"] = {"id": 7, "login": "octocat", "avatar_url": None}
+    client.cookies.set(login_session.COOKIE_NAME, "login-id-1")
+
+    def fail(login):
+        raise github_client.RepoAccessError("한도 초과", 429)
+
+    monkeypatch.setattr(github_client, "list_public_repos", fail)
+
+    res = client.get("/auth/repos")
+
+    assert res.status_code == 429
+    assert res.json()["detail"] == "한도 초과"

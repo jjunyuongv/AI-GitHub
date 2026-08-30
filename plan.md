@@ -23,6 +23,7 @@ RepoDive — GitHub 레포를 읽고 프로젝트/기술스택을 요약하는 �
 | [12-index-time.md](docs/log/12-index-time.md) | 2026-08-29 ~ | 색인 시간 조사 · `EMBED_BATCH_SIZE` 를 규칙 해시에 |
 | [13-status-review.md](docs/log/13-status-review.md) | 2026-08-30 ~ | STATUS §2 전수 확인 |
 | [14-allowlist-login.md](docs/log/14-allowlist-login.md) | 2026-08-30 ~ | 허용 목록에 로그인 조건 |
+| [15-repo-list.md](docs/log/15-repo-list.md) | 2026-08-30 ~ | 로그인한 사용자의 공개 저장소 목록 (조사 · 구현 · 검증) |
 
 04·05 는 Stage 절이 아니다. 그 시기에 **원문이 실제로 쓴 과제 표기**(1번·2번 과제 / 과제 A·B)를
 파일 이름으로 삼았다. 주제로 분류하지 않았다 — 04 에 DB 이전이, 05 에 행 번호 정확도가 들어 있어

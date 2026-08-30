@@ -804,3 +804,102 @@ button.citation-item .lines {
 .auth-user img {
   border-radius: 50%;
 }
+
+/* --- 내 저장소 목록 (첫 화면, 로그인했을 때만) --- */
+.repo-list {
+  margin-top: 24px;
+  text-align: left;
+}
+
+.repo-list h2 {
+  margin: 0 0 4px;
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+.repo-list-note {
+  margin: 12px 0 0;
+  font-size: 0.8125rem;
+  color: var(--fg-muted);
+  text-align: left;
+}
+
+.repo-list .repo-list-note {
+  margin: 0 0 12px;
+}
+
+.repo-list ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.repo-list li + li {
+  border-top: 1px solid var(--border-muted);
+}
+
+/* 행 전체가 버튼이다. 첫 화면의 초록 버튼(.landing button)을 여기서 되돌린다. */
+.landing .repo-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  padding: 10px 12px;
+  font-size: 0.875rem;
+  font-weight: 400;
+  text-align: left;
+  color: var(--fg);
+  background: var(--canvas-subtle);
+  border: 0;
+  border-radius: 0;
+}
+
+.landing .repo-row:hover:not(:disabled) {
+  background: var(--canvas);
+}
+
+.landing .repo-row:disabled {
+  opacity: 0.55;
+}
+
+.repo-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.repo-row-head strong {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.repo-row .badge {
+  padding: 0 7px;
+  font-size: 0.75rem;
+  line-height: 18px;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-radius: 2em;
+}
+
+.repo-row .badge.too-large {
+  color: var(--danger);
+  border-color: rgba(248, 81, 73, 0.4);
+}
+
+.repo-row-desc {
+  overflow: hidden;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.repo-row-meta {
+  display: flex;
+  gap: 12px;
+  font-size: 0.75rem;
+  color: var(--fg-muted);
+}

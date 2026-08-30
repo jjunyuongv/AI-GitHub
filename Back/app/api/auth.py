@@ -13,6 +13,7 @@
                         로그인 쿠키를 심고 화면으로 302
     POST /auth/logout   logins 행을 지우고 쿠키를 비운다
     GET  /auth/me       지금 요청이 누구인가
+    GET  /auth/repos    로그인한 사람의 공개 저장소 목록 (서버 토큰으로 공개 API 를 부른다)
 
 ## state 를 왜 쿠키에 두는가
 
@@ -34,8 +35,8 @@ from fastapi.responses import RedirectResponse
 from app.config import FRONTEND_ORIGIN, LOGIN_SESSION_DAYS
 from app.db import users
 from app.db.pool import DB_ERRORS
-from app.schemas.schemas import AuthStatus, AuthUser
-from app.services import login_session, oauth
+from app.schemas.schemas import AuthStatus, AuthUser, RepoList
+from app.services import github_client, login_session, oauth
 
 router = APIRouter(prefix="/auth")
 
@@ -136,3 +137,23 @@ def me(request: Request):
         enabled=True,
         user=AuthUser(login=user["login"], avatar_url=user["avatar_url"]) if user else None,
     )
+
+
+@router.get("/repos", response_model=RepoList)
+def my_repos(request: Request):
+    """로그인한 사람의 공개 저장소 목록.
+
+    **`/auth` 아래에 둔다.** 새 최상위 경로를 만들면 `Front/vite.config.ts` 의
+    `BACKEND_PATHS` 와 `Front/nginx.conf` 를 둘 다 고쳐야 하고, 갈리면 배포에서 404 가
+    SPA 폴백에 먹혀 200 으로 보인다(`docs/log/11-login.md`).
+
+    401 을 쓴다 — 여기는 "남의 것"(`/chat` 의 404)이 아니라 "로그인 안 함"이다.
+    """
+    _require_enabled()
+    user = login_session.current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
+    try:
+        return github_client.list_public_repos(user["login"])
+    except github_client.RepoAccessError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))

@@ -86,6 +86,51 @@ export async function fetchIndexStatus(sessionId: string): Promise<IndexStatus |
   }
 }
 
+export type AuthUser = { login: string; avatar_url: string | null };
+
+/** 로그인 기능이 켜져 있는가 + 지금 요청이 누구인가. 서버(`/auth/me`)가 정한다. */
+export type AuthStatus = { enabled: boolean; user: AuthUser | null };
+
+/** 로그인 상태. **못 읽으면 꺼진 것으로 친다** — 로그인은 부가 기능이라
+ *  이것 때문에 화면이 깨지면 안 된다. */
+export async function fetchAuthStatus(): Promise<AuthStatus | null> {
+  try {
+    const res = await fetch(`${API_BASE}/auth/me`);
+    return res.ok ? await res.json() : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 내 공개 저장소 한 건. `too_large` 는 서버가 `MAX_REPO_SIZE_KB` 로 판정한 값이다 —
+ *  임계값 숫자는 화면에 없다. */
+export type RepoListItem = {
+  owner: string;
+  name: string;
+  /** 분석에 그대로 넣을 주소. 화면이 조립하지 않는다. */
+  html_url: string;
+  description: string | null;
+  language: string | null;
+  size_kb: number;
+  pushed_at: string;
+  stars: number;
+  fork: boolean;
+  archived: boolean;
+  too_large: boolean;
+};
+
+/** 최근 push 순 100개까지. `total` 은 GitHub 이 준 공개 저장소 전체 개수다. */
+export type RepoList = { login: string; total: number; repos: RepoListItem[] };
+
+export async function fetchMyRepos(): Promise<RepoList> {
+  const res = await fetch(`${API_BASE}/auth/repos`);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(errorMessage(body.detail, res.status, "저장소 목록을 불러오지 못했습니다"));
+  }
+  return res.json();
+}
+
 /** 백엔드 에러 메시지. FastAPI 본문 검증만 detail이 배열이고, 나머지는 문자열이다. */
 export function errorMessage(detail: unknown, status: number, fallback: string): string {
   if (typeof detail === "string") return detail;

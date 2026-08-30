@@ -135,6 +135,30 @@ class AuthStatus(BaseModel):
     user: AuthUser | None = None
 
 
+class RepoListItem(BaseModel):
+    owner: str
+    name: str
+    # 화면이 분석에 넣을 주소. 프런트가 조립하지 않는다.
+    html_url: str
+    description: str | None
+    language: str | None
+    size_kb: int
+    pushed_at: str
+    stars: int
+    fork: bool
+    archived: bool
+    # `MAX_REPO_SIZE_KB` 판정. 임계값 숫자는 서버만 안다 — 화면은 이 불리언만 본다.
+    too_large: bool
+
+
+class RepoList(BaseModel):
+    """로그인한 사람의 공개 저장소. 최근 push 순 100개까지이고 `total` 이 전체 개수다."""
+
+    login: str
+    total: int
+    repos: list[RepoListItem]
+
+
 class RunRequest(BaseModel):
     github_url: str
     model: str

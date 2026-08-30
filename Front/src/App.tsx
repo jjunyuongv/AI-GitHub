@@ -1,9 +1,16 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import AuthBar from "./Auth";
 import ChatPanel from "./Chat";
 import AnalyzeProgress from "./Progress";
-import { API_BASE, errorMessage, type ChatMessage } from "./api";
+import RepoList from "./Repos";
+import {
+  API_BASE,
+  errorMessage,
+  fetchAuthStatus,
+  type AuthStatus,
+  type ChatMessage,
+} from "./api";
 import "./App.css";
 
 type RepoMeta = {
@@ -94,9 +101,26 @@ export default function App() {
   const [error, setError] = useState("");
   const [result, setResult] = useState<AnalyzeResponse | null>(null);
   const [chat, setChat] = useState<ChatState | null>(null);
+  // 로그인 상태는 여기서 한 번 읽는다 — 로그인 줄과 저장소 목록이 같은 값을 본다.
+  const [auth, setAuth] = useState<AuthStatus | null>(null);
 
-  async function handleSubmit(e: FormEvent) {
+  useEffect(() => {
+    let alive = true;
+    fetchAuthStatus().then((status) => {
+      if (alive) setAuth(status);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  function handleSubmit(e: FormEvent) {
     e.preventDefault();
+    void startAnalyze(url);
+  }
+
+  /** 입력창과 저장소 목록이 같은 길로 분석을 시작한다. */
+  async function startAnalyze(targetUrl: string) {
     setLoading(true);
     setError("");
     setResult(null);
@@ -107,7 +131,10 @@ export default function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         // 이어갈 대화가 있으면 알려준다 — 서버는 localStorage 를 볼 수 없다.
-        body: JSON.stringify({ github_url: url, session_id: savedSessionForUrl(url) }),
+        body: JSON.stringify({
+          github_url: targetUrl,
+          session_id: savedSessionForUrl(targetUrl),
+        }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -156,7 +183,15 @@ export default function App() {
 
           {loading ? <AnalyzeProgress /> : urlForm}
           {error && <p className="error">{error}</p>}
-          <AuthBar />
+          <AuthBar status={auth} />
+          <RepoList
+            status={auth}
+            disabled={loading}
+            onPick={(picked) => {
+              setUrl(picked);
+              void startAnalyze(picked);
+            }}
+          />
         </div>
       </main>
     );
@@ -171,7 +206,7 @@ export default function App() {
             RepoDive
           </span>
           {urlForm}
-          <AuthBar />
+          <AuthBar status={auth} />
         </div>
       </header>
 

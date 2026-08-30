@@ -115,6 +115,76 @@ def fetch_rate_limit() -> dict:
     }
 
 
+def _too_large(size_kb: int) -> bool:
+    """`MAX_REPO_SIZE_KB` 초과인가. **목록과 접근 확인이 같은 식을 써야 한다** —
+    갈리면 목록은 통과인데 누르면 413 이 된다."""
+    return bool(MAX_REPO_SIZE_KB and size_kb > MAX_REPO_SIZE_KB)
+
+
+def list_public_repos(login: str) -> dict:
+    """로그인한 사람의 공개 저장소 목록. 최근 push 순 100개 + 총 개수.
+
+    **사용자 토큰이 필요 없다.** `/users/{login}/repos` 는 인증 없이도 열리는 공개
+    엔드포인트이고 공개 저장소만 준다 — 그래서 서버 `GITHUB_TOKEN` 으로 부르고,
+    비공개가 섞일 길이 구조적으로 없어 걸러내는 코드도 없다.
+    조직(org) 소유 저장소와 협업자로 참여한 저장소는 안 나온다 — 그건 입력창으로 간다.
+
+    빈 저장소(`size == 0`)는 뺀다 — `check_repo_access` 가 400 으로 막으므로 목록에
+    두면 눌러야 오류가 난다. `too_large` 는 같은 이유로 `check_repo_access` 와 **같은
+    `size` 필드를 같은 식(`_too_large`)으로** 판정한 확정값이다. 청크 상한
+    (`MAX_INDEX_CHUNKS`)은 예고하지 않는다 — 바이트로는 청크 수를 못 맞춘다.
+    """
+    def _raise_unless_ok(resp) -> None:
+        if resp.status_code == 404:
+            raise RepoAccessError(f"GitHub 사용자 {login} 을(를) 찾을 수 없습니다.", 404)
+        if resp.status_code in (403, 429):
+            raise RepoAccessError(
+                "GitHub API 요청 한도를 초과했습니다. 잠시 후 다시 시도해 주세요.", 429
+            )
+        if resp.status_code != 200:
+            raise RepoAccessError(
+                f"GitHub API 오류 ({resp.status_code}). 잠시 후 다시 시도해 주세요.", 502
+            )
+
+    # 계정을 개명하면 `users.login` 이 낡는다. GitHub 이 301 로 새 이름을 알려주므로
+    # 따라간다 — 응답의 login 이 정식 표기다.
+    with httpx.Client(headers=_headers(), timeout=15.0, follow_redirects=True) as client:
+        user_resp = client.get(f"{API_BASE}/users/{login}")
+        _raise_unless_ok(user_resp)
+        repos_resp = client.get(
+            f"{API_BASE}/users/{login}/repos",
+            params={"per_page": 100, "sort": "pushed", "direction": "desc", "type": "owner"},
+        )
+        _raise_unless_ok(repos_resp)
+
+    profile = user_resp.json()
+    repos = []
+    for meta in repos_resp.json():
+        size_kb = meta.get("size", 0)
+        if size_kb == 0:
+            continue
+        repos.append({
+            "owner": meta["owner"]["login"],
+            "name": meta["name"],
+            # 프런트가 주소를 조립하지 않게 서버가 준다.
+            "html_url": meta["html_url"],
+            "description": meta.get("description"),
+            "language": meta.get("language"),
+            "size_kb": size_kb,
+            "pushed_at": meta.get("pushed_at", ""),
+            "stars": meta.get("stargazers_count", 0),
+            "fork": meta.get("fork", False),
+            "archived": meta.get("archived", False),
+            "too_large": _too_large(size_kb),
+        })
+
+    return {
+        "login": profile.get("login", login),
+        "total": profile.get("public_repos", len(repos)),
+        "repos": repos,
+    }
+
+
 def check_repo_access(owner: str, repo: str) -> dict:
     """LLM을 호출하기 전에 분석 가능한 저장소인지 확인하고 메타 정보를 돌려준다.
 
@@ -143,7 +213,7 @@ def check_repo_access(owner: str, repo: str) -> dict:
     if size_kb == 0:
         # 422는 FastAPI가 요청 본문 검증 실패에 쓰므로 겹치지 않게 400을 쓴다.
         raise RepoAccessError(f"{owner}/{repo} 는 비어 있어 분석할 내용이 없습니다.", 400)
-    if MAX_REPO_SIZE_KB and size_kb > MAX_REPO_SIZE_KB:
+    if _too_large(size_kb):
         raise RepoAccessError(
             f"저장소가 너무 큽니다 ({size_kb // 1024}MB). "
             f"{MAX_REPO_SIZE_KB // 1024}MB 이하만 분석할 수 있습니다.",

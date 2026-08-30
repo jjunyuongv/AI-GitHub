@@ -261,7 +261,7 @@ LLM 을 다시 부를 필요가 없다.
 
 ## 2. 현재 시스템 상태 — 사람이 갱신
 
-**최종 확인: 22763e3 (2026-08-30)**
+**최종 확인: 8290b49 (2026-08-30)**
 
 이 구역은 자동으로 맞는지 잴 수 없다. 각 항목에 그것이 사는 코드 위치를 적어 두었고,
 `Back/tests/test_status_doc.py` 는 **그 경로가 실재하는지만** 검사한다. 내용이 맞는지는
@@ -305,6 +305,11 @@ LLM 을 다시 부를 필요가 없다.
   `snapshot_source_files` 에 쌓이기 시작한다. 그래서 **private 저장소는 지원하지 않는다.**
   **로그인해서 허용 목록을 벗어나도 열리는 것은 공개 저장소뿐이라는 뜻이다** —
   이유가 scope 가 아니라 서버 토큰이므로, 로그인을 어떻게 바꿔도 달라지지 않는다.
+  로그인한 사람의 저장소 목록(`GET /auth/repos`)도 같은 선 안에 있다 — 저장된
+  `users.login` 으로 **인증이 필요 없는** `GET /users/{login}/repos` 를 서버 토큰으로
+  부르므로 토큰 미저장이 유지되고, 그 엔드포인트가 공개 저장소만 주어 비공개가 섞일
+  길이 없다(`Back/app/services/github_client.py` 의 `list_public_repos`).
+  org 소유 저장소는 목록에 안 나오므로 입력창을 남겨 두었다.
 - **DB 장애 시 남용 제한은 통과시킨다.** 상한은 비용을 지키는 장치이지 관문이 아니다
   (`Back/app/services/rate_limit.py`).
 - **프록시 뒤에서는 `TRUST_PROXY_HEADERS=1` 과 nginx 의 `X-Forwarded-For $remote_addr`
