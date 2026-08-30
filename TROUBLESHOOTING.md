@@ -208,6 +208,9 @@ RepoDive 를 만들며 **실제로 겪은** 문제와 해결을 한곳에 모은
 | `sys.modules` 를 치환했는데 대역이 안 먹음 | `from pkg import mod` 는 **패키지 속성을 먼저** 본다. 이미 import 된 서브모듈은 그 속성이 실물을 가리킨다 | 모듈 객체의 **함수를 직접** 갈아끼운다(`monkeypatch.setattr(mod, "fn", ...)`) |
 | `shutil.which()` 가 설치된 도구를 못 찾음 | `pip install` 은 venv 의 Scripts/bin 에 넣는데, 인터프리터를 직접 부르면(`.venv/Scripts/python.exe -m ...`) 그 디렉터리가 PATH 에 없다 | **인터프리터 옆을 먼저** 찾는다 (`Path(sys.executable).parent`) |
 | `.env` 를 바꾸자 무관한 테스트가 깨짐 | 테스트가 설정 실제 값에 의존 | 각 모듈이 **값을 복사**해 가므로 `monkeypatch` 로 전부 갈아끼운다 |
+| **같은 변이인데 기계마다 깨지는 테스트 수가 다르다** | `conftest.py` 가 환경변수를 고립시키지 않아 `Back/.env` 의 `GITHUB_OAUTH_CLIENT_ID` 유무로 `oauth.enabled()` 가 갈린다. 그 값에 기대는 분기를 안 고정한 테스트는 기계마다 다른 갈래를 잰다 | **분기를 만드는 설정은 테스트마다 명시적으로 고정한다**(`monkeypatch.setattr(oauth, "GITHUB_OAUTH_CLIENT_ID", ...)`). 변이를 넣었을 때 **깨지는 개수가 예상과 다르면** 먼저 이것을 의심한다 — 테스트가 약한 것이 아니라 환경이 새는 것이다 |
+| **`.env` 에 `ALLOWED_REPOS` 를 넣었더니 `test_analyze_api.py` 가 무더기로 깨졌다(15건)** | 그 파일 대부분이 `facebook/react` 로 요청하는데 목록 밖이라 403 이 된다. `allowlist.ALLOWED` 는 **임포트할 때 1회** 계산돼 개발 `.env` 가 그대로 새어 든다 | 그 파일의 autouse 격리 픽스처에서 `ALLOWED` 를 `()` 로 끈다 — 상한을 끄는 것과 같은 자리, 같은 이유다. **목록을 재는 테스트가 각자 켜는 쪽이 맞다** — 안 그러면 설정을 바꿀 때마다 무관한 테스트가 깨진다 |
+| **파이썬 출력의 한글이 `???` 로 깨지고 em dash 에서 `UnicodeEncodeError`** | Git Bash 로 부른 파이썬의 stdout 이 cp949 다. 파일은 멀쩡하고 **화면만** 깨진다 | 스크립트 첫머리에 `sys.stdout.reconfigure(encoding="utf-8")`. **파일이 깨진 것으로 오해해 되돌리지 말 것** — 바이트를 `open(..., "rb")` 로 확인하면 멀쩡하다 |
 | 마이그레이션이 NOT NULL 위반 | 옛 기록에 `source`·`cached` 없음 | 화면이 지금까지 해석해 온 **같은 값**으로 채워 고정 |
 | 하네스를 만들고 안 돌림 | 품질에서 먼저 갈려 실행할 이유가 없어짐 | **돌려 보니 설계 결함이 나왔다** — 만든 것은 한 번은 돌릴 것 |
 | `caplog` 로 로그를 대조하는데 `ValueError: unsupported format character` | `r.message` 는 **이미 펴진 문자열**인데 거기에 다시 `% r.args` 를 걸었다. 본문의 `%`(예: `80%`)를 형식 문자로 읽는다 | `r.getMessage()` 를 쓴다. 편 문자열이 필요하면 그쪽이 유일한 정답이다 |

@@ -52,6 +52,10 @@ def isolated_files(tmp_path, monkeypatch):
     monkeypatch.setattr(rate_limit, "IP_RATE_LIMIT", 0)  # 이 파일에서는 제한을 끈다
     monkeypatch.setattr(rate_limit, "DAILY_LLM_CALL_LIMIT", 0)
     monkeypatch.setattr(rate_limit, "DAILY_TOKEN_LIMIT", 0)
+    # 허용 목록도 여기서 끈다. **개발 `.env` 에 `ALLOWED_REPOS` 가 있으면** 이 파일의
+    # 대부분이 `facebook/react` 로 403 을 받아 무더기로 깨진다 — 상한을 끄는 것과 같은
+    # 이유다(설정이 테스트로 새면 기계마다 다른 것을 잰다). 목록을 재는 테스트가 각자 켠다.
+    monkeypatch.setattr(allowlist, "ALLOWED", ())
 
 
 @pytest.fixture(autouse=True)
@@ -407,8 +411,19 @@ def github_calls(monkeypatch):
     return calls
 
 
+@pytest.fixture
+def login_off(monkeypatch):
+    """로그인을 끈 상태.
+
+    아래 셋에 이것을 붙이는 이유는 **문구가 로그인 여부로 갈리기 때문**이다.
+    `conftest.py` 가 환경변수를 고립시키지 않아, 안 고정하면 `Back/.env` 에
+    `GITHUB_OAUTH_CLIENT_ID` 가 있는 기계와 없는 기계가 다른 갈래를 잰다.
+    """
+    monkeypatch.setattr(oauth, "GITHUB_OAUTH_CLIENT_ID", "")
+
+
 def test_목록_밖_저장소는_github_도_llm_도_부르기_전에_거절한다(
-    client, llm_calls, github_calls, monkeypatch
+    client, llm_calls, github_calls, login_off, monkeypatch
 ):
     monkeypatch.setattr(allowlist, "ALLOWED", ("alpha/one", "beta/two"))
 
@@ -420,7 +435,9 @@ def test_목록_밖_저장소는_github_도_llm_도_부르기_전에_거절한�
     assert llm_calls == []
 
 
-def test_목록_안_저장소는_그대로_통과한다(client, llm_calls, github_calls, sessions, monkeypatch):
+def test_목록_안_저장소는_그대로_통과한다(
+    client, llm_calls, github_calls, sessions, login_off, monkeypatch
+):
     # 차단만 확인하면 "전부 거절" 로 바뀌어도 위 테스트가 통과한다.
     monkeypatch.setattr(allowlist, "ALLOWED", ("facebook/react", "beta/two"))
     monkeypatch.setattr(summary_cache, "get", lambda access: None)
@@ -433,7 +450,9 @@ def test_목록_안_저장소는_그대로_통과한다(client, llm_calls, githu
     assert len(llm_calls) == 1
 
 
-def test_목록이_비면_임의_저장소가_통과한다(client, llm_calls, github_calls, sessions, monkeypatch):
+def test_목록이_비면_임의_저장소가_통과한다(
+    client, llm_calls, github_calls, sessions, login_off, monkeypatch
+):
     """로컬 개발이 여기에 기댄다 — .env 에 값을 안 적으면 지금까지처럼 동작한다."""
     monkeypatch.setattr(allowlist, "ALLOWED", ())
     monkeypatch.setattr(summary_cache, "get", lambda access: None)
@@ -443,6 +462,113 @@ def test_목록이_비면_임의_저장소가_통과한다(client, llm_calls, gi
 
     assert res.status_code == 200
     assert github_calls == [("facebook", "react")]
+
+
+# --- 허용 목록 × 로그인 -------------------------------------------------------
+#
+# 상태가 셋이다 — 꺼짐 / 켜짐+익명 / 켜짐+로그인. 앞의 둘은 둘 다 403 이지만
+# **문구가 다르고**, 뒤의 하나는 통과한다.
+#
+# `signed_in` 픽스처와 `_Logins` 는 아래 '세션 소유자' 절에 있다. 로그인 대역이
+# 그쪽에서 먼저 필요했던 것이라 여기서 다시 만들지 않는다.
+
+
+def test_로그인이_꺼져_있으면_남은_쿠키를_심어도_목록이_그대로_막는다(
+    client, llm_calls, github_calls, signed_in, login_off, monkeypatch
+):
+    """**이 기능의 계약이다.** 쿠키도 로그인 행도 실재하는데 익명으로 떨어져야 한다.
+
+    `signed_in` 을 켜고 `login_off` 로 다시 끈다 — 인자 순서대로 적용되므로
+    쿠키와 대역은 남고 `oauth.enabled()` 만 거짓이 된다.
+    """
+    monkeypatch.setattr(allowlist, "ALLOWED", ("alpha/one", "beta/two"))
+    client.cookies.set(login_session.COOKIE_NAME, "cookie-7")
+
+    res = _analyze(client)
+
+    assert res.status_code == 403
+    detail = res.json()["detail"]
+    assert detail == (
+        "이 서비스는 공개 데모라 지정된 저장소만 분석합니다. "
+        "사용할 수 있는 저장소: alpha/one, beta/two"
+    )
+    assert "로그인" not in detail  # 누를 버튼이 화면에 없다
+    assert github_calls == []
+    assert llm_calls == []
+
+
+def test_로그인이_켜져_있고_익명이면_데모_저장소만_받는다(
+    client, llm_calls, github_calls, signed_in, monkeypatch
+):
+    """위와 같은 요청·같은 목록인데 **문구가 다르다.** 쿠키를 안 심는다."""
+    monkeypatch.setattr(allowlist, "ALLOWED", ("alpha/one", "beta/two"))
+
+    res = _analyze(client)
+
+    assert res.status_code == 403
+    detail = res.json()["detail"]
+    assert "로그인" in detail
+    assert "alpha/one" in detail and "beta/two" in detail
+    assert "비공개" in detail  # 로그인해도 비공개는 안 열린다
+    assert github_calls == []
+    assert llm_calls == []
+
+
+def test_로그인하면_목록_밖_저장소도_분석한다(
+    client, llm_calls, github_calls, sessions, signed_in, monkeypatch
+):
+    monkeypatch.setattr(allowlist, "ALLOWED", ("alpha/one", "beta/two"))
+    monkeypatch.setattr(summary_cache, "get", lambda access: None)
+    monkeypatch.setattr(summary_cache, "put", lambda access, **kwargs: dict(SNAPSHOT))
+    client.cookies.set(login_session.COOKIE_NAME, "cookie-7")
+
+    res = _analyze(client)
+
+    assert res.status_code == 200
+    assert github_calls == [("facebook", "react")]
+    assert len(llm_calls) == 1
+    # 소유자를 함께 본다 — "목록 검사가 통째로 꺼져서 통과한 것" 과 가른다.
+    assert sessions.owners == [7]
+
+
+# 아래 둘은 **"로그인하면 무조건 통과" 가 뒤 검사까지 건너뛰지 않는지**를 잰다.
+# 통과시키는 것은 허용 목록까지이고, 남용 상한은 로그인 여부와 무관하게 걸린다.
+
+
+def test_로그인해도_남용_상한_예약을_그대로_지나간다(
+    client, llm_calls, github_calls, sessions, signed_in, monkeypatch
+):
+    reserved = []
+    monkeypatch.setattr(
+        rate_limit, "check_and_reserve", lambda ip, user_id=None: reserved.append(user_id)
+    )
+    monkeypatch.setattr(allowlist, "ALLOWED", ("alpha/one", "beta/two"))
+    monkeypatch.setattr(summary_cache, "get", lambda access: None)
+    monkeypatch.setattr(summary_cache, "put", lambda access, **kwargs: dict(SNAPSHOT))
+    client.cookies.set(login_session.COOKIE_NAME, "cookie-7")
+
+    _analyze(client)
+
+    assert reserved == [7]  # 정확히 한 번, 그 사용자로
+
+
+def test_로그인해도_상한에_걸리면_429_다(
+    client, llm_calls, github_calls, signed_in, monkeypatch
+):
+    """B-4 는 호출 횟수를, 이쪽은 **사용자에게 보이는 결과**를 잰다."""
+    def blocked(ip, user_id=None):
+        raise rate_limit.RateLimitExceeded("오늘 한도를 다 썼습니다.", 60)
+
+    monkeypatch.setattr(rate_limit, "check_and_reserve", blocked)
+    monkeypatch.setattr(allowlist, "ALLOWED", ("alpha/one", "beta/two"))
+    monkeypatch.setattr(summary_cache, "get", lambda access: None)
+    client.cookies.set(login_session.COOKIE_NAME, "cookie-7")
+
+    res = _analyze(client)
+
+    assert res.status_code == 429
+    assert res.headers["Retry-After"] == "60"
+    assert llm_calls == []
 
 
 # --- 세션 소유자 -------------------------------------------------------------

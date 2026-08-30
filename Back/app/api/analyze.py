@@ -157,8 +157,12 @@ def analyze(req: AnalyzeRequest, request: Request):
     #
     # **check_repo_access 안에 넣지 않은 이유**: 그 함수는 관리자 실험실도 쓴다
     # (api/admin.py). 안에 넣으면 검수용 임의 저장소 분석까지 함께 막힌다.
+    #
+    # **목록은 로그인하지 않은 요청에만 걸린다.** 통과시키는 것은 여기까지이고 아래
+    # 남용 상한·청크 상한은 로그인 여부와 무관하게 그대로 걸린다 — 로그인이 여는 것은
+    # **어떤 저장소를 받나**이지 **얼마나 쓰나**가 아니다.
     try:
-        allowlist.check(owner, repo)
+        allowlist.check(owner, repo, user_id=user_id)
     except allowlist.RepoNotAllowed as e:
         raise HTTPException(status_code=e.status_code, detail=str(e))
 

@@ -8,7 +8,7 @@ import logging
 
 import pytest
 
-from app.services import indexer
+from app.services import indexer, oauth
 
 
 @pytest.fixture
@@ -60,6 +60,21 @@ def test_a_failed_skip_record_still_reports_over_cap(cap, monkeypatch):
     monkeypatch.setattr(indexer.index_status, "skip", boom)
 
     assert indexer._skip_over_cap(1, "o", "r", 11) is True
+
+
+@pytest.mark.parametrize("client_id", ["", "test-client-id"])
+@pytest.mark.parametrize("chunks,skipped", [(10, False), (11, True)])
+def test_상한은_로그인_여부와_무관하다(cap, monkeypatch, client_id, chunks, skipped):
+    """로그인이 여는 것은 **어떤 저장소를 받나**이지 **얼마나 색인하나**가 아니다.
+
+    허용 목록이 로그인으로 갈리게 되면서(`services/allowlist.py`) 같은 임포트가
+    여기까지 뻗을 수 있다. `_skip_over_cap` 앞에 `if oauth.enabled(): return False`
+    를 넣는 변이는 **네 조합 중 `("test-client-id", 11)` 하나에서만** 깨진다 —
+    그래서 상한 경계 양쪽과 로그인 양쪽을 모두 둔다.
+    """
+    monkeypatch.setattr(oauth, "GITHUB_OAUTH_CLIENT_ID", client_id)
+
+    assert indexer._skip_over_cap(1, "o", "r", chunks) is skipped
 
 
 # ── 감시선: 여기도 경계 양쪽 ──────────────────────────────────────────────────
