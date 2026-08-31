@@ -904,7 +904,7 @@ EC2 → 보안 그룹 → 인바운드 규칙 → 22번 규칙의 소스를 `내
 안 바꾸면 옛 IP 만 허용된 채로 뜬다.
 
 ```
-cd ~/AI-GitHub
+cd ~/RepoDive
 sed -i 's|^PUBLIC_ORIGIN=.*|PUBLIC_ORIGIN=http://<새IP>|' .env.prod
 grep '^PUBLIC_ORIGIN=' .env.prod
 ```
