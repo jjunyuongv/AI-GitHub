@@ -244,6 +244,7 @@ RepoDive 를 만들며 **실제로 겪은** 문제와 해결을 한곳에 모은
 | **CRLF 문서를 파이썬으로 한 줄 고쳤더니 파일 전체가 LF 가 됨** | `Path.read_text()` 가 **universal newlines** 로 CRLF 를 LF 로 바꿔 읽는데, 그것을 `write_text(..., newline="")` 로 다시 쓰면 그대로 LF 로 굳는다. `newline=""` 을 붙였으니 안전하다고 착각하기 쉽다 — 그 인자는 **쓸 때 변환을 막을 뿐 읽을 때는 이미 늦었다** | CRLF 파일은 **바이트로 읽고 바이트로 쓴다**(`read_bytes`/`write_bytes`). 확인은 `git ls-files --eol` 의 `w/` 열. 이미 저질렀으면 `git checkout -- <파일>` |
 | **문서에 적은 윈도우 경로가 `C:\DevData\repodive.pem` → `C:\DevData<CR>epodive.pem` 으로 깨짐** | heredoc → 파이썬 문자열을 거치며 `\r` 이 **캐리지 리턴으로 해석**됐다. `grep` 출력에서는 백슬래시가 그냥 없어진 것처럼 보여 오타로 읽힌다 | **백슬래시가 든 문자열은 `chr(92)` 로 조립하거나 바이트로 치환한다.** 확인은 `grep` 이 아니라 **줄 중간의 홑 CR 세기**(CRLF 가 아닌 `\r`) |
 | **한글이 든 JSON 을 `curl -d` 로 보내니 400 `error parsing the body`** | Git Bash 를 거치며 한글이 깨져 JSON 이 유효하지 않게 된다. **응답은 인코딩을 말해 주지 않아** 스키마부터 의심하게 된다 | 파일에 `ensure_ascii=False` + UTF-8 로 써서 `--data-binary @파일` 로 보낸다. 필드 이름도 스키마에서 확인할 것(`/chat` 은 `question` 이 아니라 `message`) |
+| **프로젝트 폴더 이름을 바꾸니 `.venv` 가 반쯤만 깨짐** — `python.exe` 직접 호출은 되는데 `pip`·`pytest` 런처 exe 와 `activate` 는 실패하고, 테스트 2건이 `could not get source code` 로 떨어짐 | 런처 exe 와 `activate` 에 옛 절대 경로가 박혀 있다(`pyvenv.cfg` 의 `command` 로 확인). `__pycache__` 의 .pyc 도 옛 경로를 품은 채 그대로 재사용돼 `inspect.getsource` 가 없는 파일을 연다. 증상이 갈려서 원인이 하나로 안 보인다 | **venv 를 재생성하고 `__pycache__` 를 지운다.** 옮겨 고치려 하지 말 것 |
 
 ---
 
