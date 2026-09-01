@@ -245,6 +245,7 @@ RepoDive 를 만들며 **실제로 겪은** 문제와 해결을 한곳에 모은
 | **문서에 적은 윈도우 경로가 `C:\DevData\repodive.pem` → `C:\DevData<CR>epodive.pem` 으로 깨짐** | heredoc → 파이썬 문자열을 거치며 `\r` 이 **캐리지 리턴으로 해석**됐다. `grep` 출력에서는 백슬래시가 그냥 없어진 것처럼 보여 오타로 읽힌다 | **백슬래시가 든 문자열은 `chr(92)` 로 조립하거나 바이트로 치환한다.** 확인은 `grep` 이 아니라 **줄 중간의 홑 CR 세기**(CRLF 가 아닌 `\r`) |
 | **한글이 든 JSON 을 `curl -d` 로 보내니 400 `error parsing the body`** | Git Bash 를 거치며 한글이 깨져 JSON 이 유효하지 않게 된다. **응답은 인코딩을 말해 주지 않아** 스키마부터 의심하게 된다 | 파일에 `ensure_ascii=False` + UTF-8 로 써서 `--data-binary @파일` 로 보낸다. 필드 이름도 스키마에서 확인할 것(`/chat` 은 `question` 이 아니라 `message`) |
 | **프로젝트 폴더 이름을 바꾸니 `.venv` 가 반쯤만 깨짐** — `python.exe` 직접 호출은 되는데 `pip`·`pytest` 런처 exe 와 `activate` 는 실패하고, 테스트 2건이 `could not get source code` 로 떨어짐 | 런처 exe 와 `activate` 에 옛 절대 경로가 박혀 있다(`pyvenv.cfg` 의 `command` 로 확인). `__pycache__` 의 .pyc 도 옛 경로를 품은 채 그대로 재사용돼 `inspect.getsource` 가 없는 파일을 연다. 증상이 갈려서 원인이 하나로 안 보인다 | **venv 를 재생성하고 `__pycache__` 를 지운다.** 옮겨 고치려 하지 말 것 |
+| **모델이 "행 번호를 지어냈다"고 사과해서 날조로 조사를 시작했다 — 행 번호는 전부 맞았다** | `tool_result` 를 이력에 안 남기므로 다음 턴의 모델은 앞 답변의 **출처를 못 본다.** 추궁성 질문에 참인 인용을 철회한다(`round_trips=0`). 덤으로 "4,365 > 300 이니 SKIPPED" 도 추정이었다 — 상한 전에 만든 색인은 그대로 활성이고 보관 소스만 없어 배너 없이 검색만 된다 | **사과를 증거로 삼지 않는다.** `runs.round_trips` → 활성 빌드의 청크 경계(`start_line,end_line`) → 보관 소스 대조 순으로 확인한다. 상태는 `index_builds` 가 답한다(`docs/log/16-citation-recant.md`) |
 
 ---
 
