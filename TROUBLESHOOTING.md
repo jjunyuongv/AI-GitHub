@@ -196,6 +196,7 @@ RepoDive 를 만들며 **실제로 겪은** 문제와 해결을 한곳에 모은
 | 비-root 로 바꿨더니 이미지가 3GB | `USER` 를 마지막에 두고 `chown -R` 하면 모델 553MB 가 통째로 복사된 레이어가 생긴다 | **사용자를 무거운 것 굽기 앞에** 두고, 쓰기가 필요한 **디렉터리만** `chown`(-R 아님) |
 | **`up -d --build` 를 돌렸는데 설정 변경이 반영되지 않는다** | 이미지는 새로 구워지고 `Built` 도 찍히는데 **컨테이너가 옛 이미지로 계속 돈다**(실측: backend·nginx 둘 다). 빌드도 성공, 스택도 healthy 라 **적용된 것처럼 보인다** — 보안 수정에서는 조용히 열려 있는 상태가 된다 | `--force-recreate` 를 붙인다. 확인은 `docker inspect <컨테이너> --format '{{.Image}}'` 와 `docker image inspect <이미지>` 의 ID 대조 — 로그·응답 코드로는 안 갈린다 |
 | **nginx 프록시 경로에서 뺀 경로가 404 가 아니라 200 이다** | `location ~ ^/(…)` 에서 빠지면 그 경로는 접두어 `location /` 의 `try_files $uri /index.html` 로 떨어져 **SPA 가 200 으로** 나간다. 차단 전 `GET /admin/api/run` 은 405(FastAPI)였는데 **차단 후 200 이라 더 정상처럼 보인다** | **응답 코드로 판정하지 않는다.** 쿼리스트링에 고유 마커를 심고 `docker compose logs backend` 에 **안 찍히는 것**으로 확인한다(nginx healthcheck 가 `/health` 를 계속 쳐서 줄 수 세기는 노이즈가 낀다) |
+| **답변에 `파일명` + 행 번호가 여럿인데 근거 링크가 0건** — 로그는 "경로 해석 실패 N" | 파서 결함이 아니다. 그 스냅샷의 `snapshot_source_files` 가 0행이라 `_stored_paths()` 가 빈 목록을 주고 `for_answer` 가 전부 버린다(소스 보관보다 먼저 만든 옛 색인). 경로는 접미사로 풀리므로 목록만 있으면 걸린다(실측 9/9). 카운터가 "보관 소스 없음"을 "경로 해석 실패"로 세는 것이 함정이다 | 먼저 `SELECT count(*) FROM snapshot_source_files WHERE snapshot_id=…` 를 본다. 0이면 파서를 만지지 말 것 — 해소는 소스 보관(재색인은 상한을 넘어도 소스는 남긴다). 사유 이름을 가르는 수정은 `docs/log/16-citation-recant.md` 선택지 가 |
 
 ## 테스트 · 검증 · 도구
 
