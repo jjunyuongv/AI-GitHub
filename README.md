@@ -1,16 +1,14 @@
 # RepoDive
 
-
-## 데모 영상
-
-로그인 전 차단 → GitHub 로그인 → 저장소 목록 → 분석 → 질문과 근거 인용까지 (1분 51초, 무음)
-
-https://github.com/user-attachments/assets/a282ab39-936b-4a08-ab53-7da88dbe3ffa
-
 GitHub 저장소 주소를 넣으면 코드를 읽어 구조와 기술스택을 요약하고, 이어서 질문에 답한다.
 답변의 근거는 **파일명과 행 번호로 인용**되고, 인용은 화면에서 실제 코드로 펼쳐진다.
 큰 저장소는 모델이 `search_code`·`read_file`·`grep` 을 직접 부르고, 작은 저장소는 소스 전체를
 프롬프트에 넣는다 — **둘 중 어느 쪽이 나은지는 재서 정했다. 그 절차가 이 프로젝트의 내용이다.**
+
+https://github.com/user-attachments/assets/a282ab39-936b-4a08-ab53-7da88dbe3ffa
+
+*로그인하지 않은 상태에서 막히는 것부터 GitHub 로그인, 저장소 목록, 분석, 질문과
+근거 인용까지 한 번에 담았다. 1분 51초, 무음.*
 
 ![인용이 걸린 답변](docs/img/01-answer-citations.png)
 
